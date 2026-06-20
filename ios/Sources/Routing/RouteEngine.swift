@@ -48,6 +48,11 @@ final class RouteEngine {
     private(set) var bodyHeading: Double = 0
     private(set) var currentCue: Cue?
 
+    // Route mode: a cached list of maneuvers walked by GPS or the simulator.
+    private(set) var maneuvers: [Maneuver] = []
+    private(set) var activeIndex = 0
+    private(set) var distanceToNext: Double = -1
+
     /// The true-north bearing the wearer should be walking toward. Set from the bench slider now,
     /// from the cached Maps route later.
     var targetRouteBearing: Double = 0
@@ -62,5 +67,43 @@ final class RouteEngine {
         bodyHeading = body
         let relative = Bearing.relative(routeBearing: targetRouteBearing, bodyHeading: body)
         currentCue = QuadrantMapper.cue(forRelativeBearing: relative)
+    }
+
+    // MARK: - Route mode
+
+    func loadRoute(_ maneuvers: [Maneuver]) {
+        self.maneuvers = maneuvers
+        activeIndex = 0
+        distanceToNext = -1
+        currentCue = nil
+    }
+
+    /// Decide the cue from a position and heading walking the cached route. Used by live GPS and by
+    /// the simulator. Stages a cue only once within the turn-commit distance of the active maneuver,
+    /// emits `arrived` at the final one, and advances past a maneuver once it is reached.
+    func updateRoute(location: GeoPoint, phoneHeading: Double) {
+        bodyHeading = Bearing.bodyHeading(phoneTrueHeading: phoneHeading, calibrationOffset: calibrationOffset)
+        guard activeIndex < maneuvers.count else {
+            currentCue = nil
+            distanceToNext = -1
+            return
+        }
+        let maneuver = maneuvers[activeIndex]
+        let distance = Bearing.distance(from: location.coordinate, to: maneuver.coordinate)
+        distanceToNext = distance
+
+        guard distance <= WANDConfig.turnCommitMeters else {
+            currentCue = nil
+            return
+        }
+        if maneuver.isFinal {
+            currentCue = Cue(event: .arrived, mask: .all)
+        } else {
+            let relative = Bearing.relative(routeBearing: maneuver.turnToBearing, bodyHeading: bodyHeading)
+            currentCue = QuadrantMapper.cue(forRelativeBearing: relative)
+            if distance <= WANDConfig.maneuverArriveMeters {
+                activeIndex += 1
+            }
+        }
     }
 }

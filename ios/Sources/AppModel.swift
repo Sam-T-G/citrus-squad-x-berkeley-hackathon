@@ -2,12 +2,14 @@ import Foundation
 import Observation
 import os
 
-/// Top of the app. Owns the sensor services, the route engine, and the LC2 transmitter,
-/// and runs the staging loop that turns "where am I pointed" into "which quadrant taps next."
+/// Top of the app. Owns the sensor services, the route engine, the simulator, and the LC2
+/// transmitter, and runs the decide loop that turns everything into one cue per tick.
 ///
-/// The transmitter owns the 100 ms heartbeat. This loop runs at 10 Hz and only decides what
-/// to stage. Keeping the decide loop and the send loop apart means a slow decision never
-/// stalls the heartbeat. See `docs/04-phone-side.md` and `IOS-APP-PLAN.md`.
+/// The loop is the single point where input meets output. Each tick it pulls a turn cue from the
+/// route engine (live heading on the bench, or the simulator), pulls the highest-priority hazard
+/// from every `HazardSource` (LiDAR today, Cole's CV next), arbitrates safety over direction per
+/// `docs/12`, then fans the one resolved cue out to every `CueSink` (the belt, Josh's audio).
+/// Add a source or a sink and nothing in here changes.
 @MainActor
 @Observable
 final class AppModel {
@@ -15,6 +17,7 @@ final class AppModel {
     let motion = MotionService()
     let depth = DepthService()
     let route = RouteEngine()
+    let thermal = ThermalMonitor()
 
     /// Where the ESP32 is listening. Editable from the control panel.
     var espHost: String = "192.168.4.1"
@@ -24,12 +27,40 @@ final class AppModel {
     /// heartbeat. Toggle it off to test pure route cues. See `docs/03-protocol.md` obstacle tier.
     var obstacleCuesEnabled = true
 
+    /// Pluggable endpoints. Cole's CV is a `HazardSource`; Josh's audio is a `CueSink`. Add more
+    /// here and the decide loop fans out to them with no other change.
+    let vision = VisionHazardSource()
+    let audio = AudioCueSink()
+
+    /// Navigation: software simulation today, live Google Maps when a key is entered.
+    let simulator = RouteSimulator()
+    var mode: DriveMode = .bench
+    var originText = ""
+    var destinationText = ""
+    private(set) var routeStatus = "no route loaded"
+    private(set) var resolved: ResolvedCue = .idle
+
+    /// Maps Directions API key. Entered in the app, kept in UserDefaults, never committed.
+    var directionsAPIKey: String = UserDefaults.standard.string(forKey: "wand.gmapsKey") ?? "" {
+        didSet { UserDefaults.standard.set(directionsAPIKey, forKey: "wand.gmapsKey") }
+    }
+
+    enum DriveMode: String, CaseIterable, Sendable { case bench, simulate }
+
     private(set) var link = LinkReport(connectionState: "down", packetsSent: 0, lastEvent: "—")
     private(set) var transmitting = false
 
     private var transmitter: LC2Transmitter?
     private var loop: Task<Void, Never>?
     private let log = Logger(subsystem: "com.samuelgerungan.WAND", category: "app")
+
+    private var cueSinks: [CueSink] { [audio] }
+
+    init() {
+        // The decide loop runs from launch so the UI and simulator update even before the belt is
+        // linked. Belt staging simply no-ops until a transmitter exists.
+        startDecideLoop()
+    }
 
     // MARK: - Link control
 
@@ -41,13 +72,10 @@ final class AppModel {
         transmitter = tx
         Task { await tx.start() }
         transmitting = true
-        startStagingLoop()
         log.info("link started to \(self.espHost, privacy: .public):\(self.espPort)")
     }
 
     func stopLink() {
-        loop?.cancel()
-        loop = nil
         if let tx = transmitter {
             Task { await tx.stop() }
         }
@@ -65,12 +93,64 @@ final class AppModel {
 
     /// Fire one known cue so we can confirm the belt reacts. This is the M0 "hello packet" check.
     func sendTestCue() {
-        stage(Cue(event: .turnNow, mask: .right))
+        stageToBelt(ResolvedCue(event: .turnNow, mask: .right,
+                                intensity: WANDConfig.intensityDefault, source: .turn))
     }
 
-    // MARK: - Staging loop
+    // MARK: - Navigation
 
-    private func startStagingLoop() {
+    /// Load the built-in L-shaped demo route. Works with no API key and no GPS.
+    func loadDemoRoute() {
+        loadRoute(RouteMath.demoRoute)
+        routeStatus = "demo route loaded (\(RouteMath.demoRoute.count) points)"
+    }
+
+    /// Fetch a walking route from Google Maps for the typed origin and destination.
+    func fetchRoute() {
+        guard !directionsAPIKey.isEmpty else { routeStatus = "add a Maps API key first"; return }
+        guard let origin = Self.parse(originText), let destination = Self.parse(destinationText) else {
+            routeStatus = "enter origin and destination as lat,lng"
+            return
+        }
+        routeStatus = "fetching…"
+        let key = directionsAPIKey
+        Task {
+            do {
+                let client = DirectionsClient(apiKey: key)
+                let waypoints = try await client.walkingRoute(from: origin, to: destination)
+                loadRoute(waypoints)
+                routeStatus = "loaded \(waypoints.count) points from Maps"
+            } catch {
+                routeStatus = "Maps error: \(error)"
+            }
+        }
+    }
+
+    func startSimulation() {
+        mode = .simulate
+        simulator.reset()
+        simulator.start()
+    }
+
+    func stopSimulation() {
+        simulator.stop()
+        mode = .bench
+    }
+
+    private func loadRoute(_ waypoints: [GeoPoint]) {
+        route.loadRoute(RouteMath.maneuvers(from: waypoints))
+        simulator.load(waypoints)
+    }
+
+    private static func parse(_ text: String) -> GeoPoint? {
+        let parts = text.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }
+        guard parts.count == 2, let lat = Double(parts[0]), let lon = Double(parts[1]) else { return nil }
+        return GeoPoint(latitude: lat, longitude: lon)
+    }
+
+    // MARK: - Decide loop
+
+    private func startDecideLoop() {
         loop?.cancel()
         loop = Task { [weak self] in
             while !Task.isCancelled {
@@ -81,31 +161,65 @@ final class AppModel {
     }
 
     private func tick() {
-        // Provisional Tier-1: an active LiDAR obstacle takes priority over the route cue.
-        if obstacleCuesEnabled, depth.isRunning, depth.obstacleAhead {
-            stage(Cue(event: .obstacleNear, mask: .centerMass))
-            return
-        }
-        guard location.trueHeading >= 0 else {
-            clearStaged()
-            return
-        }
-        route.update(phoneHeading: location.trueHeading)
-        if let cue = route.currentCue {
-            stage(cue)
+        let turn = currentTurnCue()
+        let hazard = currentHazard()
+
+        let decided: ResolvedCue
+        if let hazard {
+            decided = ResolvedCue(event: hazard.event,
+                                  mask: hazard.mask,
+                                  intensity: ResolvedCue.intensity(forDistance: hazard.distanceMeters),
+                                  source: .hazard)
+        } else if let turn {
+            decided = ResolvedCue(event: turn.event,
+                                  mask: turn.mask,
+                                  intensity: WANDConfig.intensityDefault,
+                                  source: .turn)
         } else {
-            clearStaged()
+            decided = .idle
+        }
+
+        resolved = decided
+        stageToBelt(decided)
+        for sink in cueSinks { sink.emit(decided) }
+    }
+
+    /// The turn cue for the current drive mode, or nil.
+    private func currentTurnCue() -> Cue? {
+        switch mode {
+        case .bench:
+            guard location.trueHeading >= 0 else { return nil }
+            route.update(phoneHeading: location.trueHeading)
+            return route.currentCue
+        case .simulate:
+            guard let (point, heading) = simulator.step(dt: 0.1) else { return nil }
+            route.updateRoute(location: point, phoneHeading: heading)
+            return route.currentCue
         }
     }
 
-    private func stage(_ cue: Cue) {
-        guard let tx = transmitter else { return }
-        let packet = LC2Packet(event: cue.event, mask: cue.mask, intensity: LC2Packet.defaultIntensity)
-        Task { await tx.stage(packet) }
+    /// Highest-priority hazard across all sources: a person first, then the nearest obstacle.
+    private func currentHazard() -> Hazard? {
+        var hazards: [Hazard] = []
+        if obstacleCuesEnabled, let depthHazard = depth.currentHazard { hazards.append(depthHazard) }
+        if let visionHazard = vision.currentHazard { hazards.append(visionHazard) }
+        if let person = hazards.filter({ $0.kind == .person }).min(by: nearer) { return person }
+        return hazards.min(by: nearer)
     }
 
-    private func clearStaged() {
+    private func nearer(_ lhs: Hazard, _ rhs: Hazard) -> Bool {
+        let a = lhs.distanceMeters > 0 ? lhs.distanceMeters : .greatestFiniteMagnitude
+        let b = rhs.distanceMeters > 0 ? rhs.distanceMeters : .greatestFiniteMagnitude
+        return a < b
+    }
+
+    private func stageToBelt(_ cue: ResolvedCue) {
         guard let tx = transmitter else { return }
-        Task { await tx.clearStaged() }
+        if cue.event == .idle {
+            Task { await tx.clearStaged() }
+        } else {
+            let packet = LC2Packet(event: cue.event, mask: cue.mask, intensity: cue.intensity)
+            Task { await tx.stage(packet) }
+        }
     }
 }

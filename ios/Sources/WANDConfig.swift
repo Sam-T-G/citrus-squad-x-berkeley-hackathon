@@ -24,4 +24,18 @@ enum WANDConfig {
     static let intensityDefault: UInt8 = 192
     /// ESP32 falls back to quiet after this much silence. `docs/03` / `docs/06`, here for reference.
     static let linkSilenceTimeoutMilliseconds = 500
+
+    // Perception / safety (docs/12)
+    /// Fire the proximity cue inside this range. `docs/12` recommends ~1.8 m for demo lead time.
+    static let proximityThresholdMeters = 1.8
+    /// Distance at which the hazard tap is at full strength.
+    static let dangerNearMeters = 0.5
+    /// Lowest tap strength a graded hazard cue ever uses, so it is always felt.
+    static let intensityFloor: UInt8 = 96
+
+    // Navigation
+    /// How close to a maneuver point counts as reaching it (advance to the next).
+    static let maneuverArriveMeters = 2.0
+    /// Virtual walking speed for the route simulator, meters per second.
+    static let walkingSpeed = 1.3
 }

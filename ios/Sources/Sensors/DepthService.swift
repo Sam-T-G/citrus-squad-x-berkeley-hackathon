@@ -30,8 +30,8 @@ final class DepthService: NSObject {
     private(set) var nearestMeters: Double = -1
     private(set) var lastError: String?
 
-    /// Fire the obstacle flag inside this range. Tunable; rough cane-range default.
-    var thresholdMeters: Double = 1.2
+    /// Fire the obstacle flag inside this range. Tunable; demo default from `docs/12`.
+    var thresholdMeters: Double = WANDConfig.proximityThresholdMeters
 
     let isSupported = ARWorldTrackingConfiguration.supportsFrameSemantics(.sceneDepth)
 
@@ -100,5 +100,14 @@ extension DepthService: ARSessionDelegate {
             }
         }
         return smallest == .greatestFiniteMagnitude ? -1 : Double(smallest)
+    }
+}
+
+extension DepthService: HazardSource {
+    /// The LiDAR proximity reading as a hazard the arbitration can consume, or nil when clear.
+    /// Center mass for now; `docs/12` calls for three-band sampling to make this directional.
+    var currentHazard: Hazard? {
+        guard isRunning, obstacleAhead else { return nil }
+        return Hazard(kind: .obstacle, mask: .centerMass, distanceMeters: nearestMeters)
     }
 }

@@ -10,16 +10,23 @@ struct ControlPanelView: View {
     var body: some View {
         @Bindable var model = model
         @Bindable var route = model.route
+        @Bindable var audio = model.audio
 
         ScrollView {
             VStack(spacing: 16) {
                 header
                 linkCard(host: $model.espHost, port: $model.espPort)
+                navigationCard(apiKey: $model.directionsAPIKey,
+                               origin: $model.originText,
+                               destination: $model.destinationText,
+                               mode: $model.mode,
+                               audioEnabled: $audio.isEnabled)
                 navCard(bearing: $route.targetRouteBearing)
                 headingCard
                 gpsCard
                 depthCard(obstacleEnabled: $model.obstacleCuesEnabled)
                 motionCard
+                soakCard
             }
             .padding()
         }
@@ -92,6 +99,70 @@ struct ControlPanelView: View {
     private var cueText: String {
         guard let cue = model.route.currentCue else { return "centerline (no tap)" }
         return "\(cue.event.label) mask=0x\(String(cue.mask.rawValue, radix: 16))"
+    }
+
+    // MARK: - Navigation (simulate + Maps)
+
+    private func navigationCard(apiKey: Binding<String>,
+                                origin: Binding<String>,
+                                destination: Binding<String>,
+                                mode: Binding<AppModel.DriveMode>,
+                                audioEnabled: Binding<Bool>) -> some View {
+        Card(title: "Navigation", status: navigationStatus) {
+            Picker("Mode", selection: mode) {
+                Text("Bench").tag(AppModel.DriveMode.bench)
+                Text("Simulate").tag(AppModel.DriveMode.simulate)
+            }
+            .pickerStyle(.segmented)
+
+            LabeledRow("Status", model.routeStatus)
+            LabeledRow("Resolved cue", resolvedText)
+            if model.mode == .simulate {
+                LabeledRow("Sim segment", "\(model.simulator.segmentIndex)")
+                LabeledRow("Distance to turn", model.route.distanceToNext < 0
+                    ? "—"
+                    : String(format: "%.1f m", model.route.distanceToNext))
+            }
+
+            HStack {
+                Button("Load demo route") { model.loadDemoRoute() }
+                    .buttonStyle(.bordered)
+                if model.simulator.isRunning {
+                    Button("Stop sim") { model.stopSimulation() }.buttonStyle(.bordered)
+                } else {
+                    Button("Run sim") { model.startSimulation() }.buttonStyle(.borderedProminent)
+                }
+            }
+
+            DisclosureGroup("Live Google Maps") {
+                SecureField("Directions API key", text: apiKey)
+                    .textFieldStyle(.roundedBorder)
+                    .autocorrectionDisabled()
+                    .textInputAutocapitalization(.never)
+                TextField("origin lat,lng", text: origin)
+                    .textFieldStyle(.roundedBorder)
+                    .autocorrectionDisabled()
+                TextField("destination lat,lng", text: destination)
+                    .textFieldStyle(.roundedBorder)
+                    .autocorrectionDisabled()
+                Button("Fetch route") { model.fetchRoute() }
+                    .buttonStyle(.bordered)
+                    .disabled(apiKey.wrappedValue.isEmpty)
+            }
+
+            Toggle("Speak cues (audio)", isOn: audioEnabled)
+        }
+    }
+
+    private var navigationStatus: CardStatus {
+        if model.simulator.isRunning { return .pass }
+        return model.route.maneuvers.isEmpty ? .pending : .pass
+    }
+
+    private var resolvedText: String {
+        let cue = model.resolved
+        guard cue.event != .idle else { return "idle" }
+        return "\(cue.event.label) mask=0x\(String(cue.mask.rawValue, radix: 16)) [\(cue.source.rawValue)]"
     }
 
     // MARK: - Heading
@@ -171,6 +242,25 @@ struct ControlPanelView: View {
         }
     }
 
+    // MARK: - Thermal soak
+
+    private var soakCard: some View {
+        Card(title: "Thermal soak", status: thermalStatus) {
+            LabeledRow("Current", model.thermal.currentLabel)
+            LabeledRow("Peak", model.thermal.peakLabel)
+            LabeledRow("Elapsed", "\(model.thermal.elapsedSeconds) s")
+            LabeledRow("Time in state", model.thermal.summary)
+            Text("Start depth, link, and motion first, then run this while walking the loop for 10 minutes.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            if model.thermal.isSoaking {
+                Button("Stop soak") { model.thermal.stopSoak() }.buttonStyle(.bordered)
+            } else {
+                Button("Start soak") { model.thermal.startSoak() }.buttonStyle(.borderedProminent)
+            }
+        }
+    }
+
     // MARK: - Status logic
 
     private var linkStatus: CardStatus {
@@ -202,6 +292,15 @@ struct ControlPanelView: View {
         guard model.motion.accelAvailable, model.motion.gyroAvailable else { return .fail }
         if model.motion.accelSamples == 0 { return .pending }
         return model.motion.accelRateHz >= 30 ? .pass : .pending
+    }
+
+    private var thermalStatus: CardStatus {
+        switch model.thermal.peak {
+        case .nominal, .fair: return .pass
+        case .serious: return .pending
+        case .critical: return .fail
+        @unknown default: return .pending
+        }
     }
 
     // MARK: - Formatting
