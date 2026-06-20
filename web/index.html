@@ -113,8 +113,8 @@
     <h1>🍊 CitrusSquad</h1>
     <div class="tag">Haptic navigation belt for blind and low-vision wearers. Berkeley AI Hackathon 2026.</div>
     <div class="meta">
-      <span class="pill">Phone-side build status</span>
-      <span class="pill">Updated June 20, 2026</span>
+      <span class="pill">Team build status</span>
+      <span class="pill">Updated June 20, 2026 — branch audit</span>
       <span class="pill">Track: Ddoski's Lab</span>
     </div>
   </div>
@@ -239,9 +239,10 @@ LiDAR + camera  ──────┘     safety beats        audio (optional)
     <div class="card">
       <h3>Cole &amp; Josh</h3>
       <div class="who">Computer vision + object detection</div>
-      <p>The vision model that finds people and obstacles in the camera feed. Two plug points are waiting:
-      <code>DetectionStore</code> (draws boxes on the Demo camera) and <code>VisionHazardSource</code>
-      (fires a belt warning). They can also tap the shared camera session for frames.</p>
+      <p>Cole has a Python YOLOv8n + LiDAR-depth pipeline running with a WebSocket server and 17 tests.
+      Josh is pairing on CV. The app exposes <code>DetectionStore</code> (boxes on the Demo camera) and
+      <code>VisionHazardSource</code> (belt warning); connecting Cole's pipeline to them is the open
+      integration step (see Decisions below).</p>
     </div>
     <div class="card">
       <h3>Angelo</h3>
@@ -269,6 +270,55 @@ model.camera.session   // add an AVCaptureVideoDataOutput here</pre>
     both. It is on the list.
   </div>
 
+  <h2>Branch audit <span style="font-size:0.8rem; color:var(--slate); font-weight:400;">June 20</span></h2>
+  <div class="cards">
+    <div class="card">
+      <h3>main</h3>
+      <div class="who">merged baseline</div>
+      <p>The runnable app, the team run pipeline, the reference firmware, and the docs. Everyone branches off this.</p>
+    </div>
+    <div class="card">
+      <h3>sam/ios-app-base <span class="badge done">active</span></h3>
+      <div class="who">Sam · iOS app</div>
+      <p>Cost-capped Maps, the Operate / Demo / Diagnostics tabs, the belt visualization, calibration polish, and the front/back/left/right app layout (the firmware and protocol side captured as a proposal, not edited).</p>
+    </div>
+    <div class="card">
+      <h3>cole/computer-vision <span class="badge wip">active</span></h3>
+      <div class="who">Cole · CV layer (Python)</div>
+      <p>YOLOv8n + LiDAR depth fusion, a FastAPI WebSocket server, a webcam smoke test, and 17 passing tests. Reports each obstacle's class, depth, and horizontal position. Includes a CoreML export script for an on-device path.</p>
+    </div>
+    <div class="card">
+      <h3>josh/web-app <span class="badge next">idle</span></h3>
+      <div class="who">Josh · pairing on CV</div>
+      <p>Currently reverted to match main, no distinct work pushed. Josh is on computer vision with Cole and needs a clear slice to own.</p>
+    </div>
+    <div class="card">
+      <h3>no branch yet <span class="badge next">not started</span></h3>
+      <div class="who">Angelo · belt firmware</div>
+      <p>Nothing pushed. The reference firmware and the motor-layout proposal are waiting in the repo to adapt onto the real ESP32 and servos.</p>
+    </div>
+  </div>
+
+  <h2>Decisions and blockers</h2>
+  <div class="note">
+    <strong>1. How does the vision reach the app?</strong> Cole's CV runs off-device today: the phone
+    streams RGB + LiDAR frames over WebSocket to a laptop running the Python server, which streams
+    detections back. The app's current seams (<code>DetectionStore</code>, <code>VisionHazardSource</code>)
+    are on-device. Pick one path to close the gap:
+    <ul>
+      <li><strong>Server path:</strong> add a WebSocket sender and receiver to the Swift app. The frame
+      format and the <code>/haptics</code> JSON are already defined in Cole's HANDOFF. Fast to wire, but
+      the demo then depends on a laptop and the venue Wi-Fi.</li>
+      <li><strong>On-device path:</strong> run Cole's YOLOv8n as CoreML on the phone (his export script is
+      ready) and feed <code>DetectionStore</code> directly. No laptop, a bit more setup.</li>
+    </ul>
+  </div>
+  <ul class="checks">
+    <li><span class="dot next"></span> <strong>Roles:</strong> Cole's notes have Josh owning the iOS/Swift app, but that is Sam's lane. Confirm: Sam = app, Cole = CV, Josh = which CV slice, Angelo = belt.</li>
+    <li><span class="dot next"></span> <strong>Firmware:</strong> Angelo to adopt the front/back/left/right motor proposal (<code>proposals/</code>) and push a branch.</li>
+    <li><span class="dot next"></span> <strong>Wire format:</strong> confirm Cole's <code>/frames</code> layout and the real LiDAR depth resolution (256x192 assumed) against the live iPhone stream.</li>
+  </ul>
+
   <h2>Where the build stands</h2>
 
   <h3>Working now <span class="badge done">done</span></h3>
@@ -285,16 +335,18 @@ model.camera.session   // add an AVCaptureVideoDataOutput here</pre>
 
   <h3>In progress <span class="badge wip">now</span></h3>
   <ul class="checks">
-    <li><span class="dot wip"></span> Cole &amp; Josh: the vision / object-detection model into <code>DetectionStore</code> and the belt warning</li>
-    <li><span class="dot wip"></span> Angelo: the firmware running on the real ESP32 and servos</li>
+    <li><span class="dot wip"></span> Cole: CV layer built and tested (17 passing); off-device server plus a CoreML export ready</li>
+    <li><span class="dot wip"></span> Sam: app on the new front/back/left/right layout with the belt visualization; firmware change is a proposal</li>
+    <li><span class="dot wip"></span> Josh: pairing on CV, slice to own still to be picked</li>
   </ul>
 
   <h3>Next up <span class="badge next">soon</span></h3>
   <ul class="checks">
+    <li><span class="dot next"></span> Decide the CV integration path (laptop server vs on-device CoreML) and wire the Swift side to it</li>
+    <li><span class="dot next"></span> Angelo: push a firmware branch and adopt the motor-layout proposal on the real ESP32 + servos</li>
     <li><span class="dot next"></span> Obstacle false-positive discipline (settle, hysteresis, refractory) so it never cries wolf</li>
     <li><span class="dot next"></span> Live GPS route mode end to end (real walk drives the cues)</li>
     <li><span class="dot next"></span> One camera session feeding both depth and vision at the same time</li>
-    <li><span class="dot next"></span> Live Maps routing with each person's own key</li>
   </ul>
 
   <footer>
