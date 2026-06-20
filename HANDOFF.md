@@ -98,11 +98,27 @@ cv/
   detection.py          DepthFusedDetection dataclass + NAVIGATION_CLASSES filter list
   pipeline.py           CVPipeline: transport-agnostic inference + depth fusion
   ingest.py             FastAPI app with /frames WebSocket + binary frame parser
+  webcam_test.py        local smoke test -- runs the pipeline against the laptop webcam
 tests/
   test_pipeline.py      12 unit tests for depth fusion logic
   test_ingest.py         5 unit tests for wire protocol parsing
 requirements.txt
 ```
+
+## Local webcam test
+
+Before the iPhone is in the loop, you can verify the detection pipeline end-to-end against the laptop webcam:
+
+```bash
+python3 -m cv.webcam_test        # built-in camera
+python3 -m cv.webcam_test 1      # external camera
+```
+
+Opens a live window with bounding boxes and prints each `DepthFusedDetection` dict to stdout. Depth values will read as a flat 2.0 m (no LiDAR on a laptop) -- that is expected. The important things to check are that boxes appear, labels are from the navigation class list, and `horizontal_norm` tracks objects left-to-right.
+
+macOS: grant camera access to Terminal.app or whichever terminal you use (System Settings > Privacy & Security > Camera). VS Code's integrated terminal may not get the prompt -- run from Terminal.app if the camera fails to open.
+
+Press `q` to quit the window.
 
 ## Running the server
 
