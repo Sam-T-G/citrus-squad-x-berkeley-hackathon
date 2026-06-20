@@ -56,7 +56,30 @@ Tests/
 └── RoutingTests.swift      geometry + quadrant table against docs/04
 ```
 
+## Cost control (Maps API)
+
+The Google Directions API is the only paid call in the app. Everything else (the belt link, the sensors, the simulator) is local and free. Two layers keep the bill from running away.
+
+**Client side, in `DirectionsService`:**
+
+- **Result cache.** Routes are cached by rounded coordinates and persisted across launches, so an identical route never hits the network twice. The demo route is fetched at most once, ever.
+- **In-flight coalescing.** Concurrent requests for the same route share one call.
+- **Debounce.** A minimum interval between live calls stops double-taps and tight loops.
+- **Hard caps.** Per-session and per-day call ceilings. Once hit, calls are refused, not queued.
+- **No automatic retries.** A failure never silently re-spends; you re-trigger by hand.
+
+The Maps section of the diagnostics screen shows calls this session, calls today, cache hits, and cached routes, plus a "Clear route cache" button. The caps live in `DirectionsService.Policy`.
+
+**Server side, in Google Cloud (do this, it is the real backstop):** client guards do not protect a key that someone copies. Set these once in the Cloud console:
+
+1. **Restrict the key** to the Directions API and to this iOS app's bundle id (`com.samuelgerungan.WAND`).
+2. **Set a daily quota** on the Directions API (APIs & Services → Directions API → Quotas). A few hundred requests a day is plenty for the hack and caps the worst case.
+3. **Set a billing budget and alert** (Billing → Budgets & alerts) so you get an email well before any real spend.
+
+A key with no quota is what runs up a bill. The quota is the guarantee; the client guards just keep normal use cheap.
+
 ## Notes
 
 - The `.xcodeproj`, `DerivedData/`, and `xcuserdata/` are gitignored. Commit `Project.yml` and `Sources/`, not the generated project.
 - Swift 6 strict concurrency is on. The build is warning-clean; keep it that way.
+- The Maps API key is entered in the app and stored in `UserDefaults`. It is never committed.

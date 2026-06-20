@@ -54,12 +54,19 @@ final class AppModel {
     private var loop: Task<Void, Never>?
     private let log = Logger(subsystem: "com.samuelgerungan.WAND", category: "app")
 
+    /// Governs Google Directions usage: caches, coalesces, debounces, and caps live calls so the
+    /// API bill cannot run away. See `DirectionsService` and the cost-control note in the README.
+    private let directions = DirectionsService()
+    private(set) var directionsUsage = DirectionsUsage()
+    private(set) var isFetchingRoute = false
+
     private var cueSinks: [CueSink] { [audio] }
 
     init() {
         // The decide loop runs from launch so the UI and simulator update even before the belt is
         // linked. Belt staging simply no-ops until a transmitter exists.
         startDecideLoop()
+        Task { directionsUsage = await directions.usage() }
     }
 
     // MARK: - Link control
@@ -105,24 +112,38 @@ final class AppModel {
         routeStatus = "demo route loaded (\(RouteMath.demoRoute.count) points)"
     }
 
-    /// Fetch a walking route from Google Maps for the typed origin and destination.
+    /// Fetch a walking route from Google Maps for the typed origin and destination. The call goes
+    /// through `DirectionsService`, which serves it from cache when possible and refuses to exceed
+    /// the rate and budget caps, so repeated taps never run up the bill.
     func fetchRoute() {
+        guard !isFetchingRoute else { return }
         guard !directionsAPIKey.isEmpty else { routeStatus = "add a Maps API key first"; return }
         guard let origin = Self.parse(originText), let destination = Self.parse(destinationText) else {
             routeStatus = "enter origin and destination as lat,lng"
             return
         }
+        isFetchingRoute = true
         routeStatus = "fetching…"
         let key = directionsAPIKey
         Task {
+            defer { isFetchingRoute = false }
             do {
-                let client = DirectionsClient(apiKey: key)
-                let waypoints = try await client.walkingRoute(from: origin, to: destination)
+                let waypoints = try await directions.route(from: origin, to: destination, apiKey: key)
                 loadRoute(waypoints)
-                routeStatus = "loaded \(waypoints.count) points from Maps"
+                routeStatus = "loaded \(waypoints.count) points"
             } catch {
-                routeStatus = "Maps error: \(error)"
+                routeStatus = "\(error)"
             }
+            directionsUsage = await directions.usage()
+        }
+    }
+
+    /// Drop the cached routes. The next fetch for a route will hit the network once.
+    func clearRouteCache() {
+        Task {
+            await directions.clearCache()
+            directionsUsage = await directions.usage()
+            routeStatus = "route cache cleared"
         }
     }
 

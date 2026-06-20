@@ -3,7 +3,7 @@ import CoreLocation
 
 /// A plain lat/lng pair. Sendable value type so it crosses from the Directions network call back
 /// to the main actor without dragging a non-Sendable `CLLocationCoordinate2D` across.
-struct GeoPoint: Sendable, Equatable {
+struct GeoPoint: Sendable, Equatable, Codable {
     var latitude: Double
     var longitude: Double
 

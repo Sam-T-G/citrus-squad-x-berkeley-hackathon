@@ -147,7 +147,14 @@ struct ControlPanelView: View {
                     .autocorrectionDisabled()
                 Button("Fetch route") { model.fetchRoute() }
                     .buttonStyle(.bordered)
-                    .disabled(apiKey.wrappedValue.isEmpty)
+                    .disabled(apiKey.wrappedValue.isEmpty || model.isFetchingRoute)
+
+                LabeledRow("Calls this session", "\(model.directionsUsage.sessionCalls)")
+                LabeledRow("Calls today", "\(model.directionsUsage.dailyCalls)")
+                LabeledRow("Cache hits", "\(model.directionsUsage.cacheHits)")
+                LabeledRow("Cached routes", "\(model.directionsUsage.cachedRoutes)")
+                Button("Clear route cache") { model.clearRouteCache() }
+                    .buttonStyle(.bordered)
             }
 
             Toggle("Speak cues (audio)", isOn: audioEnabled)
