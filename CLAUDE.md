@@ -6,7 +6,9 @@ Auto-loaded by Claude Code. Read first every session.
 
 Citrus Squad's code repo for the Berkeley AI Hackathon 2026 (June 20-21, MLK Jr. Building, UC Berkeley). This is the production repo. Code that ships at the demo lives here.
 
-The planning playbook is a separate repo: [`citrus-squad-bible`](https://github.com/Sam-T-G/citrus-squad-bible). Treat it as the source of truth for project direction, ideation, timeline, pitch craft, and (if WAND is the chosen idea) the design spec under `docs/20-` through `docs/24-`.
+## Model context
+
+Sam runs Claude Code on **Opus 4.7 (1M context) only**. No fallback to Sonnet or Haiku. If a teammate is using a different model, the working norms in this file still apply, but answers may differ in style or depth.
 
 ## Project direction
 
@@ -14,12 +16,12 @@ Open as of repo creation (June 20, 2026). Frontrunner is WAND (haptic navigation
 
 ## Stack
 
-Not yet picked. The §6.5 alignment meeting in the bible picks one of:
+Not yet picked. Team aligns on one of:
 
 - **Expo** (React Native + TypeScript)
 - **Native iOS** (Swift + SwiftUI)
 
-Native Android dropped out per the bible's build log iter 24 (demo phone is an iPhone). Wait for the stack decision before scaffolding.
+Native Android is out because the demo phone is an iPhone. Wait for the stack decision before scaffolding.
 
 ## Voice rules
 
@@ -34,7 +36,6 @@ Apply Samuel's standing writing voice to any prose Claude writes into this repo.
 
 ## Working norms
 
-- **Read the bible first.** Before writing code for a feature, check the bible's matching design doc. If the doc says one thing and the code says another, the doc wins until Sam confirms a scope change.
 - **Branching follows `CONTRIBUTING.md`.** Personal branches use `sam/`, `cole/`, `josh/`, `angelo/` prefixes; feature branches use `feat/<topic>`.
 - **No `node_modules/` or `xcuserdata/` in commits.** The `.gitignore` covers both stacks.
 - **Commits are imperative, present tense.** "Add heading service" not "Added heading service."
@@ -49,7 +50,6 @@ Apply Samuel's standing writing voice to any prose Claude writes into this repo.
 
 ## Hard rules during the hack window
 
-- Hack window opens **Saturday June 20 at 10:00 AM** and runs 24 hours.
-- Event window closes **Sunday June 21 at 6:00 PM** after judging.
-- Devpost submission deadline per the bible's `docs/14-timeliness-and-pacing.md`. Check that doc before assuming the submit-by time.
+- Hack window opens **Saturday June 20 at 11:00 AM** and runs 24 hours, closing **Sunday June 21 at 11:00 AM**.
+- Judging and closing ceremony follow the hack window.
 - Demo phone is Sam's iPhone 15 Pro Max running iOS 27.0 beta. Free-tier signing covers the hackathon window (cert expires June 26-27).

@@ -38,7 +38,7 @@ Once the stack lands:
 
 ## Spec questions
 
-Look in the [`citrus-squad-bible`](https://github.com/Sam-T-G/citrus-squad-bible) first. If the bible doesn't answer it, the question is genuinely open. Either ask the team or write your assumption into the PR description and ship.
+If something isn't clear from the README, `CLAUDE.md`, or the existing code, ask the team in chat first. If no one's online, write your assumption into the PR description and ship.
 
 ## When to stop and reconvene
 
