@@ -16,7 +16,7 @@ Four bytes per packet. Connectionless UDP (default) or UART (if Coral uses Optio
 | Byte | Meaning | Range |
 |---|---|---|
 | **0 — event** | What just happened | See event table below |
-| **1 — motor mask** | Which motor(s) fire | Bit 0 = Front (forward), bit 1 = Left (rotate left), bit 2 = Right (rotate right), bit 3 = Back (proximity) |
+| **1 — quadrant mask** | Which servo(s) fire | Bit 0 = Far Left, bit 1 = Left, bit 2 = Right, bit 3 = Far Right |
 | **2 — intensity hint** | Tap travel distance (small = subtle, large = full swing) | 0..255. Default: 192 |
 | **3 — sequence number** | Rolling counter for staleness detection | 0..255, wraps |
 
@@ -25,20 +25,19 @@ Four bytes per packet. Connectionless UDP (default) or UART (if Coral uses Optio
 | Code | Event | Pattern | Tier | Notes |
 |---|---|---|---|---|
 | `0x00` | idle | none | — | Sent every heartbeat tick when nothing is staged. Keeps the link alive. |
-| `0x10` | vision-danger | sustained tap-train | 3 | Phone camera (or Coral, if it ships) emits for a person in the path. Taps Back. |
-| `0x20` | turn-slight | single tap | 2 | Gentle rotate cue. Taps Left or Right. |
-| `0x21` | turn-now | triple tap | 2 | Sharp rotate cue. Taps Left or Right. |
-| `0x22` | turn-around | triple tap on both rotate motors | 2 | U-turn. Mask = Left + Right (`0x06`). |
-| `0x23` | arrived | sweep all motors | 2 | Final maneuver. Also reused for calibration confirmation per [`04-phone-side.md`](04-phone-side.md). |
-| `0x24` | forward | single tap | 2 | On course / proceed straight. Taps Front. |
+| `0x10` | vision-danger | sustained tap-train | 3 | Coral emits when person-in-path criteria fire. |
+| `0x20` | turn-slight | single tap | 2 | Phone emits for a gentle directional cue. |
+| `0x21` | turn-now | triple tap | 2 | Phone emits for a sharp turn or imminent maneuver. |
+| `0x22` | turn-around | triple tap on both Far servos | 2 | U-turn case. Same pattern as turn-now, different mask. |
+| `0x23` | arrived | sweep left-to-right | 2 | Phone emits at the final maneuver. Also reused for calibration confirmation per [`04-phone-side.md`](04-phone-side.md). |
 | `0x30` | reserved | — | — | Was vision-context in an earlier plan. Do not reuse. |
-| `0x40` | obstacle-near | sustained tap-train | 1 | Phone LiDAR proximity. Taps Back, same pattern as vision-danger. |
+| `0x40` | obstacle-near (provisional) | sustained tap-train | 1 | Phone emits from its LiDAR scene-depth read when something is closer than the threshold straight ahead. Reuses the sustained tap-train pattern, so it stays inside the four-pattern cap. See the obstacle tier note below. |
 
 Other byte 0 values are undefined. ESP32 should ignore unknown codes silently and log a counter.
 
 ## Obstacle tier (phone LiDAR, provisional)
 
-`0x40 obstacle-near` revives the Tier-1 obstacle reflex that `01-architecture.md` deferred for lack of a ToF sensor. The iPhone 15 Pro Max has a LiDAR scanner, so the phone is the ToF sensor. `DepthService` samples the scene-depth map and the phone emits `0x40` when the nearest reading is inside `thresholdMeters` (default 1.8 m), masked to Back (`0x08`). Proximity always warns on the Back motor; how close it is rides on the intensity byte.
+`0x40 obstacle-near` revives the Tier-1 obstacle reflex that `01-architecture.md` deferred for lack of a ToF sensor. The iPhone 15 Pro Max has a LiDAR scanner, so the phone is the ToF sensor. `DepthService` samples the center of the scene-depth map and the phone emits `0x40` when the nearest reading is inside `thresholdMeters` (default 1.2 m), masked to center mass (`0x06`).
 
 Because the phone now sends both Tier-1 and Tier-2 on the same channel, it deconflicts locally before it stages: an active obstacle cue takes priority over a route cue for that heartbeat. The wearer feels the obstacle, not the turn, while something is close. Coral's Tier-3 `vision-danger` is still a separate sender and the ESP32 deconfliction rule below is unchanged.
 
@@ -48,15 +47,16 @@ Because the phone now sends both Tier-1 and Tier-2 on the same channel, it decon
 
 | Mask | Binary | Meaning |
 |---|---|---|
-| `0x00` | `0000` | No motor fires. Valid for `0x00` idle. Invalid for any cue event. |
-| `0x01` | `0001` | Front only (forward) |
-| `0x02` | `0010` | Left only (rotate left) |
-| `0x04` | `0100` | Right only (rotate right) |
-| `0x08` | `1000` | Back only (proximity) |
-| `0x06` | `0110` | Left + Right (turn-around) |
-| `0x0F` | `1111` | All four (arrived sweep, animates in sequence regardless of mask order) |
+| `0x00` | `0000` | No servo fires. Valid for `0x00` idle. Invalid for any cue event. |
+| `0x01` | `0001` | Far Left only |
+| `0x02` | `0010` | Left only |
+| `0x04` | `0100` | Right only |
+| `0x08` | `1000` | Far Right only |
+| `0x06` | `0110` | Left + Right (center mass) |
+| `0x09` | `1001` | Far Left + Far Right (turn-around) |
+| `0x0F` | `1111` | All four (sweep pattern animates them in sequence regardless of mask order) |
 
-The ESP32 reads the mask one bit at a time and fires the corresponding motor with the pattern selected by byte 0.
+The ESP32 reads the mask one bit at a time and fires the corresponding servo with the pattern selected by byte 0.
 
 ## Cadence
 

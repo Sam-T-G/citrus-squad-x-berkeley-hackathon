@@ -35,12 +35,10 @@
 // Servo wiring. Pins from docs/02-hardware.md. Signal lines only; servo power
 // comes from the 5 V rail, not the ESP32.
 // ---------------------------------------------------------------------------
-// Four motors around the torso: front (forward), left (rotate left), right (rotate right),
-// back (proximity). Order matches the LC2 mask bits 0..3.
-#define PIN_FRONT 25
-#define PIN_LEFT  26
-#define PIN_RIGHT 32
-#define PIN_BACK  33
+#define PIN_FAR_LEFT  25
+#define PIN_LEFT      26
+#define PIN_RIGHT     32
+#define PIN_FAR_RIGHT 33
 #define PIN_STATUS_LED 18
 
 // Servo travel. NEUTRAL is the resting angle, TAP is the fully-extended tap.
