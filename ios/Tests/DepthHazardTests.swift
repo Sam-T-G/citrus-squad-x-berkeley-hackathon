@@ -1,5 +1,5 @@
 import Testing
-@testable import WAND
+@testable import CitrusSquad
 
 /// The pure band-to-mask mapping from `docs/12` section 3. The closest in-threshold band wins, and
 /// a side band escalates to its Far servo inside the near distance.

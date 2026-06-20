@@ -4,7 +4,7 @@ A short record of what the team has already verified on real hardware, before th
 
 ## Demo phone (iPhone 15 Pro Max, iOS 27.0 beta)
 
-Validated 2026-06-20 via a SwiftUI capability probe. All four phone-side capabilities the WAND scaffold relies on are confirmed working:
+Validated 2026-06-20 via a SwiftUI capability probe. All four phone-side capabilities the Citrus Squad scaffold relies on are confirmed working:
 
 | Capability | API | Result |
 |---|---|---|
@@ -34,9 +34,10 @@ These are the things we do not yet know about, and are at risk in the hack windo
 
 - **Belt-side servo PWM from ESP32.** Bench-test still required. Includes signal-level confirmation and stall-current behavior under simultaneous actuation.
 - **LC2 packet round-trip phone → ESP32.** Includes UDP routing through the venue Wi-Fi or a travel router. M0 milestone.
-- **Coral Mendel boot + hello-world inference.** Owner must complete this in the pre-event sprint Wed-Fri. Cut gate at H+12 if not landed.
+- **LiDAR scene depth on the demo phone.** `DepthService` is scaffolded but the depth read, the ground-plane behavior at the mount angle, and the directional sampling are not yet confirmed on hardware. M0 and the P-milestones in [`12-perception-and-safety-design.md`](12-perception-and-safety-design.md).
 - **Venue magnetometer reliability.** Friday venue gate. Walk the demo room with the phone open. Cannot be validated until Friday.
-- **Combined phone load.** The probe tested each capability in isolation. M5 validates them all running simultaneously (heading + GPS + UDP + UI) at the demo cadence.
+- **Combined phone load and thermals.** The probe tested each capability in isolation. The full app now adds continuous LiDAR depth and possibly camera Vision on top of heading, GPS, UDP, and UI. Validate them running together at demo cadence, and run a ten-minute thermal soak, before relying on it. This is the biggest open unknown.
+- **Coral Edge TPU (optional stretch only).** Not on the base path. Validate only if someone takes the sponsor stretch.
 
 ## Why the validation record matters
 

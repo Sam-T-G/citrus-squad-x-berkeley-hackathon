@@ -47,7 +47,7 @@ struct LC2Packet: Sendable, Equatable {
     var sequence: UInt8 = 0
 
     /// Default tap travel distance. 0..255, per the protocol doc.
-    static let defaultIntensity = WANDConfig.intensityDefault
+    static let defaultIntensity = CitrusSquadConfig.intensityDefault
 
     /// The exact bytes that go on the wire.
     func encoded() -> Data {

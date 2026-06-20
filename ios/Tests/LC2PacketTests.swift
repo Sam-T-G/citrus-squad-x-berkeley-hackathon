@@ -1,6 +1,6 @@
 import Testing
 import Foundation
-@testable import WAND
+@testable import CitrusSquad
 
 /// The single most valuable test in the repo per `SWIFT.md`: a wire-format bug is invisible until
 /// the belt does the wrong thing, so we pin the exact bytes against `docs/03-protocol.md`.

@@ -44,8 +44,8 @@ final class MotionService {
         startTime = Date()
         accelSamples = 0
         gyroSamples = 0
-        motion.accelerometerUpdateInterval = WANDConfig.motionUpdateInterval
-        motion.gyroUpdateInterval = WANDConfig.motionUpdateInterval
+        motion.accelerometerUpdateInterval = CitrusSquadConfig.motionUpdateInterval
+        motion.gyroUpdateInterval = CitrusSquadConfig.motionUpdateInterval
 
         motion.startAccelerometerUpdates(to: .main) { [weak self] data, _ in
             guard let self, let data else { return }

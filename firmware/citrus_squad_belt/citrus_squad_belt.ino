@@ -1,4 +1,4 @@
-// WAND belt firmware (ESP32)
+// Citrus Squad belt firmware (ESP32)
 //
 // The receiving half of the link. The phone sends 4-byte LC2 packets over UDP at 10 Hz;
 // this firmware drives the four tap servos to match. The wire format is docs/03-protocol.md:

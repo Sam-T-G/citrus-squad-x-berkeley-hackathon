@@ -34,6 +34,9 @@ yarn-error.log*
 .env.local
 .env.*.local
 
+# Per-developer signing (each teammate has their own)
+Local.xcconfig
+
 # Editor
 .vscode/
 .idea/

@@ -1,17 +1,21 @@
-name: WAND
+name: CitrusSquad
 options:
-  bundleIdPrefix: com.samuelgerungan
+  bundleIdPrefix: com.citrussquad
   deploymentTarget:
     iOS: "17.0"
   createIntermediateGroups: true
+# Per-developer signing (team + bundle id) lives in Local.xcconfig, which is gitignored.
+# Run ./setup.sh once; it creates Local.xcconfig from Local.xcconfig.example.
+configFiles:
+  Debug: Local.xcconfig
+  Release: Local.xcconfig
 settings:
   base:
     SWIFT_VERSION: "6.0"
-    DEVELOPMENT_TEAM: "8K9T7N9LHM"
     CODE_SIGN_STYLE: Automatic
     SWIFT_STRICT_CONCURRENCY: complete
 targets:
-  WAND:
+  CitrusSquad:
     type: application
     platform: iOS
     sources:
@@ -19,30 +23,30 @@ targets:
     info:
       path: Sources/Info.plist
       properties:
-        CFBundleDisplayName: WAND
+        CFBundleDisplayName: CitrusSquad
         UILaunchScreen: {}
         UIApplicationSceneManifest:
           UIApplicationSupportsMultipleScenes: false
         UISupportedInterfaceOrientations:
           - UIInterfaceOrientationPortrait
-        NSLocationWhenInUseUsageDescription: WAND reads heading and GPS to compute which way to turn.
-        NSMotionUsageDescription: WAND reads the accelerometer and gyroscope for motion features.
-        NSCameraUsageDescription: WAND uses the LiDAR depth camera to sense nearby obstacles.
+        NSLocationWhenInUseUsageDescription: CitrusSquad reads heading and GPS to compute which way to turn.
+        NSMotionUsageDescription: CitrusSquad reads the accelerometer and gyroscope for motion features.
+        NSCameraUsageDescription: CitrusSquad uses the LiDAR depth camera to sense nearby obstacles.
     settings:
       base:
-        PRODUCT_BUNDLE_IDENTIFIER: com.samuelgerungan.WAND
+        PRODUCT_BUNDLE_IDENTIFIER: $(APP_BUNDLE_ID)
         TARGETED_DEVICE_FAMILY: "1"
         GENERATE_INFOPLIST_FILE: NO
         SUPPORTS_MACCATALYST: NO
-  WANDTests:
+  CitrusSquadTests:
     type: bundle.unit-test
     platform: iOS
     sources:
       - path: Tests
     dependencies:
-      - target: WAND
+      - target: CitrusSquad
     settings:
       base:
         GENERATE_INFOPLIST_FILE: YES
-        TEST_HOST: "$(BUILT_PRODUCTS_DIR)/WAND.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/WAND"
+        TEST_HOST: "$(BUILT_PRODUCTS_DIR)/CitrusSquad.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/CitrusSquad"
         BUNDLE_LOADER: "$(TEST_HOST)"

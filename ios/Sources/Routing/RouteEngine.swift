@@ -92,7 +92,7 @@ final class RouteEngine {
         let distance = Bearing.distance(from: location.coordinate, to: maneuver.coordinate)
         distanceToNext = distance
 
-        guard distance <= WANDConfig.turnCommitMeters else {
+        guard distance <= CitrusSquadConfig.turnCommitMeters else {
             currentCue = nil
             return
         }
@@ -101,7 +101,7 @@ final class RouteEngine {
         } else {
             let relative = Bearing.relative(routeBearing: maneuver.turnToBearing, bodyHeading: bodyHeading)
             currentCue = QuadrantMapper.cue(forRelativeBearing: relative)
-            if distance <= WANDConfig.maneuverArriveMeters {
+            if distance <= CitrusSquadConfig.maneuverArriveMeters {
                 activeIndex += 1
             }
         }

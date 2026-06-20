@@ -19,9 +19,9 @@ struct LinkReport: Sendable {
 /// (see `docs/03-protocol.md`). The sequence number rolls so the ESP32 can spot drops.
 actor LC2Transmitter {
     private let endpoint: NWEndpoint
-    private let queue = DispatchQueue(label: "com.samuelgerungan.WAND.lc2")
+    private let queue = DispatchQueue(label: "com.samuelgerungan.CitrusSquad.lc2")
     private let report: @Sendable (LinkReport) -> Void
-    private let log = Logger(subsystem: "com.samuelgerungan.WAND", category: "lc2")
+    private let log = Logger(subsystem: "com.samuelgerungan.CitrusSquad", category: "lc2")
 
     private var connection: NWConnection?
     private var heartbeat: Task<Void, Never>?
@@ -74,7 +74,7 @@ actor LC2Transmitter {
         heartbeat = Task { [weak self] in
             while !Task.isCancelled {
                 await self?.tick()
-                try? await Task.sleep(for: .milliseconds(WANDConfig.heartbeatMilliseconds))
+                try? await Task.sleep(for: .milliseconds(CitrusSquadConfig.heartbeatMilliseconds))
             }
         }
     }

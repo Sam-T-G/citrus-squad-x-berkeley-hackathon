@@ -1,6 +1,6 @@
 import Testing
 import CoreLocation
-@testable import WAND
+@testable import CitrusSquad
 
 struct BearingTests {
     @Test func dueNorthIsZero() {

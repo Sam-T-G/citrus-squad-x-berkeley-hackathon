@@ -41,8 +41,8 @@ final class AppModel {
     private(set) var resolved: ResolvedCue = .idle
 
     /// Maps Directions API key. Entered in the app, kept in UserDefaults, never committed.
-    var directionsAPIKey: String = UserDefaults.standard.string(forKey: "wand.gmapsKey") ?? "" {
-        didSet { UserDefaults.standard.set(directionsAPIKey, forKey: "wand.gmapsKey") }
+    var directionsAPIKey: String = UserDefaults.standard.string(forKey: "citrussquad.gmapsKey") ?? "" {
+        didSet { UserDefaults.standard.set(directionsAPIKey, forKey: "citrussquad.gmapsKey") }
     }
 
     enum DriveMode: String, CaseIterable, Sendable { case bench, simulate }
@@ -52,7 +52,7 @@ final class AppModel {
 
     private var transmitter: LC2Transmitter?
     private var loop: Task<Void, Never>?
-    private let log = Logger(subsystem: "com.samuelgerungan.WAND", category: "app")
+    private let log = Logger(subsystem: "com.samuelgerungan.CitrusSquad", category: "app")
 
     /// Governs Google Directions usage: caches, coalesces, debounces, and caps live calls so the
     /// API bill cannot run away. See `DirectionsService` and the cost-control note in the README.
@@ -101,7 +101,7 @@ final class AppModel {
     /// Fire one known cue so we can confirm the belt reacts. This is the M0 "hello packet" check.
     func sendTestCue() {
         stageToBelt(ResolvedCue(event: .turnNow, mask: .right,
-                                intensity: WANDConfig.intensityDefault, source: .turn))
+                                intensity: CitrusSquadConfig.intensityDefault, source: .turn))
     }
 
     // MARK: - Navigation
@@ -194,7 +194,7 @@ final class AppModel {
         } else if let turn {
             decided = ResolvedCue(event: turn.event,
                                   mask: turn.mask,
-                                  intensity: WANDConfig.intensityDefault,
+                                  intensity: CitrusSquadConfig.intensityDefault,
                                   source: .turn)
         } else {
             decided = .idle

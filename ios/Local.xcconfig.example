@@ -1,0 +1,15 @@
+// Local.xcconfig.example — per-developer signing settings.
+//
+// Copy this file to Local.xcconfig (or run ./setup.sh, which does it for you), then fill in your
+// own values. Local.xcconfig is gitignored, so your settings never collide with a teammate's and
+// never get committed.
+
+// Your Apple Developer Team ID (10 characters). A free Apple ID works.
+// Find it: Xcode → Settings → Accounts → select your Apple ID → Team appears with its ID, or at
+// developer.apple.com → Membership. You can also leave this blank and pick the team in Xcode's
+// Signing & Capabilities tab after generating.
+DEVELOPMENT_TEAM =
+
+// Your app's bundle id. Make it unique to you so it does not clash with a teammate's signing.
+// Convention: com.<yourname>.CitrusSquad
+APP_BUNDLE_ID = com.example.CitrusSquad

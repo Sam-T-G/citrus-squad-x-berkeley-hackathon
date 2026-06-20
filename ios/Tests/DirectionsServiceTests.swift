@@ -1,6 +1,6 @@
 import Testing
 import Foundation
-@testable import WAND
+@testable import CitrusSquad
 
 /// Counts how many times the live fetch actually ran, so the tests can prove the governor avoids
 /// network calls.
@@ -11,7 +11,7 @@ private actor CallCounter {
 
 struct DirectionsServiceTests {
     private func isolatedDefaults() -> UserDefaults {
-        UserDefaults(suiteName: "wand.test.\(UUID().uuidString)")!
+        UserDefaults(suiteName: "citrussquad.test.\(UUID().uuidString)")!
     }
 
     private func makeService(policy: DirectionsService.Policy, counter: CallCounter) -> DirectionsService {

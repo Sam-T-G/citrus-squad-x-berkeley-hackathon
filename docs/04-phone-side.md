@@ -10,11 +10,11 @@ The phone is the brain of Tier-2. It reads Google Maps directions, tracks the we
 - Optional accelerometer + gyro at 50 Hz for bonus features (fall detection, step counting between GPS fixes).
 - Body-relative bearing computation for every maneuver.
 - LC2 packet staging and 10 Hz heartbeat emission.
+- LiDAR proximity sensing, and camera person-in-path as a stretch. These are the safety tier, designed in [`12-perception-and-safety-design.md`](12-perception-and-safety-design.md). This doc covers the direction tier.
 
 ## What the phone does NOT own
 
 - Driving servos. The ESP32 does that.
-- Vision. Coral does that, separately.
 - Knowing about the belt's hardware state. The phone only knows what packets it has emitted.
 
 ## The heading math

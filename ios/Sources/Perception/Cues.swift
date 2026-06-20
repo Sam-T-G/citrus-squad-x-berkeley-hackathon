@@ -48,14 +48,14 @@ struct ResolvedCue: Sendable, Equatable {
     /// Distance-graded tap strength per `docs/12`: closer means a harder tap, floored so it is
     /// always felt. Falls back to the flat default when distance is unknown.
     static func intensity(forDistance distance: Double) -> UInt8 {
-        guard distance > 0 else { return WANDConfig.intensityDefault }
-        let near = WANDConfig.dangerNearMeters
-        let far = WANDConfig.proximityThresholdMeters
+        guard distance > 0 else { return CitrusSquadConfig.intensityDefault }
+        let near = CitrusSquadConfig.dangerNearMeters
+        let far = CitrusSquadConfig.proximityThresholdMeters
         if distance <= near { return 255 }
-        if distance >= far { return WANDConfig.intensityFloor }
+        if distance >= far { return CitrusSquadConfig.intensityFloor }
         let t = (distance - near) / (far - near)          // 0 at near, 1 at far
-        let value = 255.0 - t * Double(255 - Int(WANDConfig.intensityFloor))
-        return UInt8(min(255, max(Double(WANDConfig.intensityFloor), value)))
+        let value = 255.0 - t * Double(255 - Int(CitrusSquadConfig.intensityFloor))
+        return UInt8(min(255, max(Double(CitrusSquadConfig.intensityFloor), value)))
     }
 }
 

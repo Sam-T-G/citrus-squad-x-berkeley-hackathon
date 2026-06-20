@@ -1,4 +1,4 @@
-// WAND belt firmware configuration.
+// Citrus Squad belt firmware configuration.
 //
 // Edit this file to match how the phone and the belt find each other on Wi-Fi.
 // Everything the rest of the firmware needs is here.
@@ -21,8 +21,8 @@
 #define AP_MODE 1
 
 // Access-point mode settings (used when AP_MODE == 1)
-#define AP_SSID "WAND-BELT"
-#define AP_PASS "wandwand"   // 8+ chars; "" for an open network
+#define AP_SSID "CitrusSquad-BELT"
+#define AP_PASS "citrussquad"   // 8+ chars; "" for an open network
 
 // Station mode settings (used when AP_MODE == 0)
 #define STA_SSID "your-network"

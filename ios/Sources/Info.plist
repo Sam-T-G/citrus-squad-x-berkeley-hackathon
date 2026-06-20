@@ -5,7 +5,7 @@
 	<key>CFBundleDevelopmentRegion</key>
 	<string>$(DEVELOPMENT_LANGUAGE)</string>
 	<key>CFBundleDisplayName</key>
-	<string>WAND</string>
+	<string>CitrusSquad</string>
 	<key>CFBundleExecutable</key>
 	<string>$(EXECUTABLE_NAME)</string>
 	<key>CFBundleIdentifier</key>
@@ -21,11 +21,11 @@
 	<key>CFBundleVersion</key>
 	<string>1</string>
 	<key>NSCameraUsageDescription</key>
-	<string>WAND uses the LiDAR depth camera to sense nearby obstacles.</string>
+	<string>CitrusSquad uses the LiDAR depth camera to sense nearby obstacles.</string>
 	<key>NSLocationWhenInUseUsageDescription</key>
-	<string>WAND reads heading and GPS to compute which way to turn.</string>
+	<string>CitrusSquad reads heading and GPS to compute which way to turn.</string>
 	<key>NSMotionUsageDescription</key>
-	<string>WAND reads the accelerometer and gyroscope for motion features.</string>
+	<string>CitrusSquad reads the accelerometer and gyroscope for motion features.</string>
 	<key>UIApplicationSceneManifest</key>
 	<dict>
 		<key>UIApplicationSupportsMultipleScenes</key>

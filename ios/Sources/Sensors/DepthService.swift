@@ -21,7 +21,7 @@ struct BandDepths: Sendable, Equatable {
 @Observable
 final class DepthService: NSObject {
     private let session = ARSession()
-    private let log = Logger(subsystem: "com.samuelgerungan.WAND", category: "depth")
+    private let log = Logger(subsystem: "com.samuelgerungan.CitrusSquad", category: "depth")
 
     /// Throttle: process roughly every sixth frame, so a 60 Hz AR feed drives a ~10 Hz read.
     /// ARKit delivers frames on one serial queue, so this counter is only ever touched there.
@@ -33,7 +33,7 @@ final class DepthService: NSObject {
     private(set) var lastError: String?
 
     /// Fire the obstacle flag inside this range. Tunable; demo default from `docs/12`.
-    var thresholdMeters: Double = WANDConfig.proximityThresholdMeters
+    var thresholdMeters: Double = CitrusSquadConfig.proximityThresholdMeters
 
     let isSupported = ARWorldTrackingConfiguration.supportsFrameSemantics(.sceneDepth)
 
@@ -122,7 +122,7 @@ extension DepthService: HazardSource {
     var currentHazard: Hazard? {
         guard isRunning else { return nil }
         return Self.hazard(left: bands.left, center: bands.center, right: bands.right,
-                           threshold: thresholdMeters, near: WANDConfig.dangerNearMeters)
+                           threshold: thresholdMeters, near: CitrusSquadConfig.dangerNearMeters)
     }
 
     /// Pure band-to-mask mapping per the `docs/12` table. The closest band within threshold wins;

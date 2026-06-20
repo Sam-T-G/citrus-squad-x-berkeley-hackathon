@@ -22,7 +22,7 @@ final class ThermalMonitor {
     private(set) var secondsByState: [ProcessInfo.ThermalState: Int] = [:]
 
     private var task: Task<Void, Never>?
-    private let log = Logger(subsystem: "com.samuelgerungan.WAND", category: "thermal")
+    private let log = Logger(subsystem: "com.samuelgerungan.CitrusSquad", category: "thermal")
     private let sampleInterval = 2
 
     var currentLabel: String { Self.label(current) }

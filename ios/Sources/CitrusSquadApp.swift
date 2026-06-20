@@ -1,7 +1,7 @@
 import SwiftUI
 
 @main
-struct WANDApp: App {
+struct CitrusSquadApp: App {
     var body: some Scene {
         WindowGroup {
             RootView()

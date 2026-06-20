@@ -1,6 +1,6 @@
-# WAND — phone-side iOS app
+# Citrus Squad — phone-side iOS app
 
-The Tier-2 brain of WAND. Reads heading and GPS, computes which belt quadrant to tap, and sends LC2 packets to the ESP32 over UDP. This is the base scaffold: the structure, the sensors, the link, and the navigation math are in place. Live Maps and route replay come next.
+The Tier-2 brain of Citrus Squad. Reads heading and GPS, computes which belt quadrant to tap, and sends LC2 packets to the ESP32 over UDP. This is the base scaffold: the structure, the sensors, the link, and the navigation math are in place. Live Maps and route replay come next.
 
 Built to the contract in [`../docs/11-phone-app-design-spec.md`](../docs/11-phone-app-design-spec.md) and the craft rules in [`../SWIFT.md`](../SWIFT.md).
 
@@ -14,8 +14,8 @@ Built to the contract in [`../docs/11-phone-app-design-spec.md`](../docs/11-phon
 
 ```sh
 cd ios
-xcodegen generate      # writes WAND.xcodeproj from Project.yml
-open WAND.xcodeproj
+xcodegen generate      # writes CitrusSquad.xcodeproj from Project.yml
+open CitrusSquad.xcodeproj
 ```
 
 Then in Xcode: pick the demo phone as the run destination, set Signing to your personal team if needed, and press ⌘R. Grant the location, motion, and camera prompts on first launch.
@@ -35,9 +35,9 @@ One card per subsystem:
 
 ```
 Sources/
-├── WANDApp.swift          @main entry
+├── CitrusSquadApp.swift          @main entry
 ├── AppModel.swift         @MainActor @Observable; wires services, runs the staging loop
-├── WANDConfig.swift       tunable numbers in one place
+├── CitrusSquadConfig.swift       tunable numbers in one place
 ├── Routing/
 │   ├── Bearing.swift      pure geometry: haversine, body and relative bearing
 │   └── RouteEngine.swift  QuadrantMapper + calibration + current cue
@@ -72,7 +72,7 @@ The Maps section of the diagnostics screen shows calls this session, calls today
 
 **Server side, in Google Cloud (do this, it is the real backstop):** client guards do not protect a key that someone copies. Set these once in the Cloud console:
 
-1. **Restrict the key** to the Directions API and to this iOS app's bundle id (`com.samuelgerungan.WAND`).
+1. **Restrict the key** to the Directions API and to this iOS app's bundle id (`com.samuelgerungan.CitrusSquad`).
 2. **Set a daily quota** on the Directions API (APIs & Services → Directions API → Quotas). A few hundred requests a day is plenty for the hack and caps the worst case.
 3. **Set a billing budget and alert** (Billing → Budgets & alerts) so you get an email well before any real spend.
 

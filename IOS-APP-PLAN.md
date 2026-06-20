@@ -1,6 +1,6 @@
-# IOS-APP-PLAN.md — WAND phone-side app
+# IOS-APP-PLAN.md — Citrus Squad phone-side app
 
-The engineering plan for the iOS app that owns Tier-2 of WAND. This realizes the phone responsibilities described in `docs/01-architecture.md` and `docs/04-phone-side.md`. Those docs own the product spec and the wire protocol. This doc owns how we build the app that satisfies them.
+The engineering plan for the iOS app that owns Tier-2 of Citrus Squad. This realizes the phone responsibilities described in `docs/01-architecture.md` and `docs/04-phone-side.md`. Those docs own the product spec and the wire protocol. This doc owns how we build the app that satisfies them.
 
 Status: native iOS Swift is the chosen stack. The base app is scaffolded and compiling under Swift 6 strict concurrency in [`ios/`](ios/). Craft rules live in [`SWIFT.md`](SWIFT.md). The per-module build contract (the one decision function, ownership of each tricky byte, the bearing-to-bytes table) lives in [`docs/11-phone-app-design-spec.md`](docs/11-phone-app-design-spec.md); when an implementation detail here and there disagree, `docs/11` wins.
 
@@ -22,9 +22,9 @@ Service-oriented with one main-actor app model on top. Features are vertical sli
 A check means the module exists and compiles in the base scaffold. The rest are planned.
 
 ```
-WANDApp (@main)                                                              [x]
+CitrusSquadApp (@main)                                                              [x]
   └── AppModel  (@MainActor, @Observable)   wires services, runs staging loop [x]
-        │     WANDConfig         one home for the tunable numbers             [x]
+        │     CitrusSquadConfig         one home for the tunable numbers             [x]
         │
         ├── Routing/
         │     Bearing            pure geometry: haversine, relative bearing   [x]
@@ -76,7 +76,7 @@ Live outdoor input is a runtime toggle on top of the same engine, not a separate
 - The encoder has a golden-vector unit test asserting exact bytes for known inputs, so a protocol change shows up as a failing test, not as a confused belt.
 - The app never invents an event the protocol does not define. New events are added to the protocol doc first, then the encoder.
 
-The vision-danger packet (`0x10` in the architecture) originates on the Coral board, not the phone, so the phone never emits it. The app only needs to not collide with that opcode space.
+The phone now emits the safety events too. `0x40 obstacle-near` comes from the LiDAR depth read (base, wired below), and `0x10 vision-danger` comes from the camera person-in-path stretch. The phone arbitrates a hazard against the staged turn cue before sending, so it never puts two events in one packet. The arbitration and the perception design live in [`docs/12-perception-and-safety-design.md`](docs/12-perception-and-safety-design.md). Coral, if the optional sponsor stretch ships, would be a second sender of `0x10`.
 
 ## Depth sensing (LiDAR)
 
@@ -108,7 +108,7 @@ The base diverges from `docs/11` in one place worth noting: the staging loop run
 ## What this app is not
 
 - Not the belt firmware. The ESP32 turning events into PWM lives in a separate part of the repo once the stack lands.
-- Not the vision tier. That is Coral-side, conditional, and described in `docs/05-vision-tier.md`.
+- Not the belt-side rendering of the safety tier. The phone senses and arbitrates the hazard, but the ESP32 turns the event into taps. The perception design is in `docs/12-perception-and-safety-design.md`.
 - Not a general navigation app. It computes one thing: which quadrant to tap next. Everything else is in service of that.
 
 ## Open questions for the team

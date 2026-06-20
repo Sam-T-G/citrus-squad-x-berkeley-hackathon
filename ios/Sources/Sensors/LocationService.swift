@@ -25,7 +25,7 @@ final class LocationService: NSObject {
         super.init()
         manager.delegate = self
         manager.desiredAccuracy = kCLLocationAccuracyBest
-        manager.headingFilter = WANDConfig.headingFilterDegrees
+        manager.headingFilter = CitrusSquadConfig.headingFilterDegrees
         authorization = manager.authorizationStatus
         if isAuthorized { start() }
     }

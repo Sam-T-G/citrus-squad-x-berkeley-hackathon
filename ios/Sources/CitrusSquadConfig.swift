@@ -3,7 +3,7 @@ import Foundation
 /// Single home for the tunable numbers so no magic values scatter across modules. Values come
 /// from `docs/03-protocol.md`, `docs/04-phone-side.md`, the `docs/11-phone-app-design-spec.md`
 /// build contract, and the proven `wand-phone-probe` sensor configuration.
-enum WANDConfig {
+enum CitrusSquadConfig {
     /// Distance before a maneuver at which a cue is staged. `docs/04` Maps integration.
     static let turnCommitMeters = 5.0
     /// Off-polyline distance that triggers a reroute. `docs/04` Maps integration.

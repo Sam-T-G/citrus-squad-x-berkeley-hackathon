@@ -17,7 +17,7 @@ final class RouteSimulator {
     private(set) var segmentIndex = 0
 
     /// Meters per second of the virtual walk. Bump it up to run a route faster while testing.
-    var speedMetersPerSecond = WANDConfig.walkingSpeed
+    var speedMetersPerSecond = CitrusSquadConfig.walkingSpeed
 
     func load(_ waypoints: [GeoPoint]) {
         self.waypoints = waypoints

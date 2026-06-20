@@ -1,4 +1,4 @@
-# WAND belt firmware (ESP32)
+# Citrus Squad belt firmware (ESP32)
 
 The receiving half of the link. The phone sends 4-byte LC2 packets over UDP at 10 Hz; this firmware drives the four tap servos to match. It is the executable form of the wire contract in [`../docs/03-protocol.md`](../docs/03-protocol.md), so the phone-side app has something concrete to send to.
 
@@ -30,7 +30,7 @@ Put a bulk capacitor (1000 µF or larger) across the 5 V servo rail. The four-se
 
 1. Install the Arduino IDE and the ESP32 board package (Boards Manager, search "esp32").
 2. Install the **ESP32Servo** library (Library Manager).
-3. Open `wand_belt/wand_belt.ino`. Edit `config.h` if needed.
+3. Open `citrus_squad_belt/citrus_squad_belt.ino`. Edit `config.h` if needed.
 4. Select your ESP32 board and port, then Upload.
 5. Open the Serial monitor at 115200 to see the network address and packet logs.
 
@@ -38,7 +38,7 @@ Put a bulk capacitor (1000 µF or larger) across the 5 V servo rail. The four-se
 
 `config.h` has one switch, `AP_MODE`:
 
-- **`AP_MODE 1` (default): the ESP32 hosts its own Wi-Fi.** Join `WAND-BELT` from the phone, and the belt is at `192.168.4.1` — which is the app's default host. No router, no venue Wi-Fi, nothing to type. Cost: the phone has no internet while joined, so live Maps is off (the replay/sim demo does not need it).
+- **`AP_MODE 1` (default): the ESP32 hosts its own Wi-Fi.** Join `CitrusSquad-BELT` from the phone, and the belt is at `192.168.4.1` — which is the app's default host. No router, no venue Wi-Fi, nothing to type. Cost: the phone has no internet while joined, so live Maps is off (the replay/sim demo does not need it).
 - **`AP_MODE 0`: the ESP32 joins your Wi-Fi or the phone hotspot.** Set `STA_SSID` / `STA_PASS`. The belt gets an address from that network; read it off the Serial monitor at boot and type it into the app's host field. Keeps phone internet for live Maps.
 
 ## Testing the link without the belt

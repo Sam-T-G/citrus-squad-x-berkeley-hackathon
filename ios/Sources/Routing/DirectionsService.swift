@@ -149,9 +149,9 @@ actor DirectionsService {
         var storedAt: Date
     }
 
-    private static let cacheDefaultsKey = "wand.dir.cache"
-    private static let dailyCountKey = "wand.dir.dailyCount"
-    private static let dailyDateKey = "wand.dir.dailyDate"
+    private static let cacheDefaultsKey = "citrussquad.dir.cache"
+    private static let dailyCountKey = "citrussquad.dir.dailyCount"
+    private static let dailyDateKey = "citrussquad.dir.dailyDate"
 
     private static func loadCache(from defaults: UserDefaults) -> [String: CacheEntry] {
         guard let data = defaults.data(forKey: cacheDefaultsKey),

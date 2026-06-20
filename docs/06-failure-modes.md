@@ -44,7 +44,7 @@ A red-team list of what can go wrong, ranked by impact on the demo. Each entry h
 
 **Mitigation.** Use a dedicated travel router with its own SSID. Set the router to a clean 2.4 GHz channel after scanning Saturday morning. Or use phone hotspot, which gives the phone control of the airtime.
 
-**Recovery.** Switch to UART (Coral) and a tethered demo where the phone is plugged into the belt by USB. This is the nuclear option; only ship if Wi-Fi is genuinely unworkable.
+**Recovery.** Switch to a tethered demo where the phone is plugged into the belt by USB serial. This is the nuclear option; only ship if Wi-Fi is genuinely unworkable.
 
 ### F6. Servo signal level is marginal
 
@@ -54,13 +54,13 @@ A red-team list of what can go wrong, ranked by impact on the demo. Each entry h
 
 **Recovery.** Swap to the spare servos (which may have different sensitivity). Or wire in a PCA9685 PWM controller for clean 5 V output across all four channels. Adds ~30 minutes of work.
 
-### F7. Coral camera frame drops
+### F7. Phone perception fails: thermal throttle or ground-plane false alarms
 
-**Trigger.** USB camera driver under Mendel Linux drops frames intermittently. Trigger filter never sees three consecutive frames, so vision-danger never fires.
+**Trigger.** Two separate failures, both on the phone safety tier. First, running depth capture continuously alongside GPS, the screen, and the radio can push the phone to thermal-throttle or show a heat warning across a multi-run demo. Second, a chest-mounted phone tilts down a few degrees and the LiDAR reads the floor two to three meters ahead as a constant obstacle, so the belt buzzes the whole walk.
 
-**Mitigation.** Use the Coral Camera (CSI interface) if it works. Fall back to a known-good USB webcam (Logitech C920 class). Test 5 minutes of continuous capture at the M3 milestone.
+**Mitigation.** For thermal: keep the capture config minimal, watch `ProcessInfo.thermalState`, and degrade on a ladder (drop camera person-detection first, then slow the depth read) before the OS forces it. Keep the phone on a charger between runs. Run a ten-minute thermal soak Saturday afternoon. For the ground plane: mount the phone near vertical and reject depth readings that fall on the expected floor line using device pitch. Both are specified in [`12-perception-and-safety-design.md`](12-perception-and-safety-design.md).
 
-**Recovery.** Reset the camera (unplug-replug). If it persists, the Tier-3 layer cuts at the next gate.
+**Recovery.** If the phone runs hot, the degrade ladder keeps the turn cues alive and drops the safety tier last. If the ground plane trips the alarm at the venue, raise the threshold and re-check the mount angle. Worst case, the safety beat cuts and the direction demo ships on its own, the same disclosed-gap framing the pitch already handles.
 
 ## Annoyances (degrade but do not kill)
 
@@ -70,7 +70,7 @@ A red-team list of what can go wrong, ranked by impact on the demo. Each entry h
 
 **Mitigation.** Bench-test the audibility at the M2 milestone. If the clicks are loud, slow the tap-train cadence from 10 Hz to 6 Hz.
 
-**Recovery.** Demo in a slightly louder room; venue chatter masks the clicks. Or skip the vision tier (no sustained tap-trains) and ship Tier-2 only.
+**Recovery.** Demo in a slightly louder room; venue chatter masks the clicks. Or skip the safety tier (no sustained tap-trains) and ship the direction cues only.
 
 ### F9. Wearer cannot distinguish patterns
 
