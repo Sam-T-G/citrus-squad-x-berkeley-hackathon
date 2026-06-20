@@ -9,6 +9,7 @@ enum LC2Event: UInt8, Sendable {
     case turnNow = 0x21       // triple tap, sharp or imminent turn
     case turnAround = 0x22    // triple tap on both Far servos, U-turn
     case arrived = 0x23       // sweep left to right, final maneuver
+    case obstacleNear = 0x40  // sustained tap-train, phone LiDAR proximity (provisional, Tier-1)
 
     var label: String {
         switch self {
@@ -18,6 +19,7 @@ enum LC2Event: UInt8, Sendable {
         case .turnNow: return "turn-now"
         case .turnAround: return "turn-around"
         case .arrived: return "arrived"
+        case .obstacleNear: return "obstacle-near"
         }
     }
 }

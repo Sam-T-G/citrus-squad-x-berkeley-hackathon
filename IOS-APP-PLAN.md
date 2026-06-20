@@ -84,7 +84,9 @@ The iPhone 15 Pro Max has a LiDAR scanner, and `DepthService` reads it through A
 
 This is the piece that does not yet have a home in the protocol. The phone's LiDAR gives raw proximity, which is exactly what the deferred Tier-1 obstacle reflex needed; `docs/01-architecture.md` deferred Tier-1 only because there was no ToF sensor in hand. The phone is the ToF sensor. So the phone could revive a Tier-1 "something is right in front of you" cue with no extra hardware.
 
-What it cannot do yet is emit that cue. The LC2 pattern vocabulary is hard-capped at four in `docs/03-protocol.md`, and a phone-side obstacle event would need a new event code plus a team vote. So for now `DepthService` only senses and surfaces the reading in the UI. Wiring it to the belt is a team decision, not a unilateral one. See the open questions.
+It now emits a cue too. `docs/03-protocol.md` gained a provisional `0x40 obstacle-near` event that reuses the sustained tap-train pattern, so it stays inside the four-pattern cap. When depth is running and something is closer than `thresholdMeters`, `AppModel` stages the obstacle cue with priority over the route cue for that heartbeat. A toggle on the depth card turns this on and off so the route path can be tested clean.
+
+Everything about this tier is provisional and changeable at any time: the event code, the threshold, the mask, the priority, whether it ships at all. It is wired now so the team can feel it on the bench and decide. The one place it reaches outside the phone is the ESP32 firmware, which has to learn the new code, so a quick sync with the belt owner is the only coordination it needs.
 
 The camera permission question is settled. Sam owns the project design and made the call: LiDAR depth is part of the app, and since ARKit depth needs `NSCameraUsageDescription`, that key stays. `docs/11-phone-app-design-spec.md` has been updated to match, so there is no drift.
 
@@ -112,6 +114,6 @@ The base diverges from `docs/11` in one place worth noting: the staging loop run
 ## Open questions for the team
 
 - **Camera permission.** Resolved. LiDAR is in, so `NSCameraUsageDescription` stays. `docs/11` updated to match.
-- **LiDAR over LC2.** Open. The phone now senses obstacles, but emitting a belt cue needs a new LC2 event code and a pattern (reuse, since the vocabulary is capped at four), and it has to deconflict with Coral's Tier-3 vision-danger. Until that lands, `DepthService` is a sensing-only readout. This is the one piece that touches the ESP32 firmware lane, so it is worth a quick sync with whoever owns the belt before wiring it.
+- **Obstacle cue over LC2.** Wired, provisional. `0x40 obstacle-near` is in `docs/03` and the phone emits it. Open parts: tune the threshold and mask on the bench, confirm the local priority over route cues feels right, and teach the ESP32 firmware the new code. All of it is changeable; nothing is locked.
 - **UDP transport.** Confirm the phone-to-ESP32 link host and port match what the ESP32 firmware listens on. The control panel defaults to `192.168.4.1:9999`; change it there or in `AppModel`.
 - **Replay route.** Decide whether the recorded replay route is captured before the hack or during setup on Saturday.

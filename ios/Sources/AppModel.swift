@@ -20,6 +20,10 @@ final class AppModel {
     var espHost: String = "192.168.4.1"
     var espPort: UInt16 = 9999
 
+    /// Provisional. When on, an active LiDAR obstacle takes priority over the route cue for that
+    /// heartbeat. Toggle it off to test pure route cues. See `docs/03-protocol.md` obstacle tier.
+    var obstacleCuesEnabled = true
+
     private(set) var link = LinkReport(connectionState: "down", packetsSent: 0, lastEvent: "—")
     private(set) var transmitting = false
 
@@ -77,7 +81,15 @@ final class AppModel {
     }
 
     private func tick() {
-        guard location.trueHeading >= 0 else { return }
+        // Provisional Tier-1: an active LiDAR obstacle takes priority over the route cue.
+        if obstacleCuesEnabled, depth.isRunning, depth.obstacleAhead {
+            stage(Cue(event: .obstacleNear, mask: .centerMass))
+            return
+        }
+        guard location.trueHeading >= 0 else {
+            clearStaged()
+            return
+        }
         route.update(phoneHeading: location.trueHeading)
         if let cue = route.currentCue {
             stage(cue)

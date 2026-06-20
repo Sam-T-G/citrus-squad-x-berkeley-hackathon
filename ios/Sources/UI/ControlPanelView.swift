@@ -18,7 +18,7 @@ struct ControlPanelView: View {
                 navCard(bearing: $route.targetRouteBearing)
                 headingCard
                 gpsCard
-                depthCard
+                depthCard(obstacleEnabled: $model.obstacleCuesEnabled)
                 motionCard
             }
             .padding()
@@ -127,7 +127,7 @@ struct ControlPanelView: View {
 
     // MARK: - Depth / LiDAR
 
-    private var depthCard: some View {
+    private func depthCard(obstacleEnabled: Binding<Bool>) -> some View {
         Card(title: "Depth (LiDAR)", status: depthStatus) {
             LabeledRow("Supported", model.depth.isSupported ? "yes" : "no")
             LabeledRow("Nearest ahead", model.depth.nearestMeters < 0
@@ -136,6 +136,7 @@ struct ControlPanelView: View {
             LabeledRow("Obstacle", model.depth.obstacleAhead
                 ? "WITHIN \(format(model.depth.thresholdMeters)) m"
                 : "clear")
+            Toggle("Emit obstacle cue (provisional)", isOn: obstacleEnabled)
             if let err = model.depth.lastError {
                 Text(err).font(.caption).foregroundStyle(.red)
             }

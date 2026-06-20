@@ -20,6 +20,11 @@ struct LC2PacketTests {
         #expect(Array(packet.encoded()) == [0x00, 0x00, 0x00, 0x11])
     }
 
+    @Test func obstacleNearIsCenterMass() {
+        let packet = LC2Packet(event: .obstacleNear, mask: .centerMass, intensity: 192, sequence: 0)
+        #expect(Array(packet.encoded()) == [0x40, 0x06, 0xC0, 0x00])
+    }
+
     @Test func maskBitsMatchProtocol() {
         #expect(QuadrantMask.farLeft.rawValue == 0x01)
         #expect(QuadrantMask.left.rawValue == 0x02)
