@@ -3,18 +3,20 @@ import ARKit
 import Observation
 import os
 
-/// LiDAR depth sensing on the iPhone 15 Pro Max. Uses ARKit scene depth to report the nearest
-/// obstacle distance straight ahead, sampled from the center of the depth map.
+/// Nearest depth in each of three vertical bands of the frame, in meters. -1 means no valid read.
+struct BandDepths: Sendable, Equatable {
+    var left: Double = -1
+    var center: Double = -1
+    var right: Double = -1
+}
+
+/// LiDAR depth sensing on the iPhone 15 Pro Max via ARKit scene depth. Samples the frame in three
+/// vertical bands (left, center, right) so the obstacle cue can fire on the side the obstacle is
+/// actually on, per `docs/12-perception-and-safety-design.md`, not just "something ahead."
 ///
-/// This is the new capability folded into the app. The phone's LiDAR gives raw proximity, which
-/// is exactly what the deferred Tier-1 obstacle reflex needed (it was cut only for lack of a ToF
-/// sensor, per `docs/01-architecture.md`). For now this service only reports distance and an
-/// "obstacle within threshold" flag. Emitting it to the belt over LC2 needs a team-agreed event
-/// code, since the pattern vocabulary is capped at four in `docs/03-protocol.md`. See the LiDAR
-/// section in `IOS-APP-PLAN.md` for the open decision.
-///
-/// ARKit delivers frames on a background queue, so the delegate extracts the distance on that
-/// queue and hops the plain `Double` to the main actor. The non-Sendable `ARFrame` never crosses.
+/// ARKit delivers frames on a background queue, so the delegate reduces each frame to three plain
+/// `Double`s on that queue and hops only the small value type to the main actor. The non-Sendable
+/// `ARFrame` and the depth buffer never cross an isolation boundary.
 @MainActor
 @Observable
 final class DepthService: NSObject {
@@ -27,13 +29,18 @@ final class DepthService: NSObject {
     @ObservationIgnored nonisolated(unsafe) private var frameTick = 0
 
     private(set) var isRunning = false
-    private(set) var nearestMeters: Double = -1
+    private(set) var bands = BandDepths()
     private(set) var lastError: String?
 
     /// Fire the obstacle flag inside this range. Tunable; demo default from `docs/12`.
     var thresholdMeters: Double = WANDConfig.proximityThresholdMeters
 
     let isSupported = ARWorldTrackingConfiguration.supportsFrameSemantics(.sceneDepth)
+
+    /// Closest valid reading across all three bands, for display.
+    var nearestMeters: Double {
+        [bands.left, bands.center, bands.right].filter { $0 > 0 }.min() ?? -1
+    }
 
     var obstacleAhead: Bool {
         nearestMeters > 0 && nearestMeters <= thresholdMeters
@@ -65,8 +72,8 @@ extension DepthService: ARSessionDelegate {
     nonisolated func session(_ session: ARSession, didUpdate frame: ARFrame) {
         frameTick &+= 1
         guard frameTick % 6 == 0, let depth = frame.sceneDepth?.depthMap else { return }
-        let meters = Self.nearestMeters(in: depth)
-        Task { @MainActor in self.nearestMeters = meters }
+        let sampled = Self.bandedNearest(in: depth)
+        Task { @MainActor in self.bands = sampled }
     }
 
     nonisolated func session(_ session: ARSession, didFailWithError error: Error) {
@@ -74,40 +81,69 @@ extension DepthService: ARSessionDelegate {
         Task { @MainActor in self.lastError = message }
     }
 
-    /// Smallest valid depth in a small center patch, in meters. Returns -1 if no valid reading.
-    /// The depth map is `kCVPixelFormatType_DepthFloat32`, values already in meters.
-    nonisolated static func nearestMeters(in depthMap: CVPixelBuffer) -> Double {
+    /// Nearest valid depth in each third of the frame. Samples a horizontal strip biased slightly
+    /// above center, which favors torso and head-height objects and mostly dodges the floor that a
+    /// chest-mounted phone tilts toward. Depth is `kCVPixelFormatType_DepthFloat32`, in meters.
+    nonisolated static func bandedNearest(in depthMap: CVPixelBuffer) -> BandDepths {
         CVPixelBufferLockBaseAddress(depthMap, .readOnly)
         defer { CVPixelBufferUnlockBaseAddress(depthMap, .readOnly) }
 
-        guard let base = CVPixelBufferGetBaseAddress(depthMap) else { return -1 }
+        guard let base = CVPixelBufferGetBaseAddress(depthMap) else { return BandDepths() }
         let width = CVPixelBufferGetWidth(depthMap)
         let height = CVPixelBufferGetHeight(depthMap)
         let rowBytes = CVPixelBufferGetBytesPerRow(depthMap)
-        let radius = 10
-        let cx = width / 2
-        let cy = height / 2
-        guard cx - radius >= 0, cy - radius >= 0, cx + radius < width, cy + radius < height else {
-            return -1
-        }
+        guard width >= 3, height >= 3 else { return BandDepths() }
 
-        var smallest = Float.greatestFiniteMagnitude
-        for y in (cy - radius)...(cy + radius) {
+        let yStart = Int(Double(height) * 0.30)
+        let yEnd = Int(Double(height) * 0.55)
+        let third = width / 3
+
+        var smallest: [Float] = [.greatestFiniteMagnitude, .greatestFiniteMagnitude, .greatestFiniteMagnitude]
+        for y in yStart..<yEnd {
             let row = base.advanced(by: y * rowBytes).assumingMemoryBound(to: Float32.self)
-            for x in (cx - radius)...(cx + radius) {
+            for x in 0..<width {
                 let value = row[x]
-                if value > 0, value < smallest { smallest = value }
+                guard value > 0 else { continue }
+                let band = x < third ? 0 : (x < 2 * third ? 1 : 2)
+                if value < smallest[band] { smallest[band] = value }
             }
         }
-        return smallest == .greatestFiniteMagnitude ? -1 : Double(smallest)
+
+        func meters(_ value: Float) -> Double {
+            value == .greatestFiniteMagnitude ? -1 : Double(value)
+        }
+        return BandDepths(left: meters(smallest[0]), center: meters(smallest[1]), right: meters(smallest[2]))
     }
 }
 
 extension DepthService: HazardSource {
-    /// The LiDAR proximity reading as a hazard the arbitration can consume, or nil when clear.
-    /// Center mass for now; `docs/12` calls for three-band sampling to make this directional.
+    /// The LiDAR reading as a directional hazard, or nil when clear. Fires on the side the obstacle
+    /// is on (the closest in-threshold band), escalating to the Far servo when it is very close.
     var currentHazard: Hazard? {
-        guard isRunning, obstacleAhead else { return nil }
-        return Hazard(kind: .obstacle, mask: .centerMass, distanceMeters: nearestMeters)
+        guard isRunning else { return nil }
+        return Self.hazard(left: bands.left, center: bands.center, right: bands.right,
+                           threshold: thresholdMeters, near: WANDConfig.dangerNearMeters)
+    }
+
+    /// Pure band-to-mask mapping per the `docs/12` table. The closest band within threshold wins;
+    /// inside `near` it escalates a side band to its Far servo. Static and pure so it is unit tested.
+    nonisolated static func hazard(left: Double, center: Double, right: Double,
+                                   threshold: Double, near: Double) -> Hazard? {
+        var best: (mask: QuadrantMask, distance: Double)?
+
+        func consider(_ distance: Double, inner: QuadrantMask, outer: QuadrantMask) {
+            guard distance > 0, distance <= threshold else { return }
+            let mask = distance <= near ? outer : inner
+            if best == nil || distance < best!.distance {
+                best = (mask, distance)
+            }
+        }
+
+        consider(left, inner: .left, outer: .farLeft)
+        consider(center, inner: .centerMass, outer: .centerMass)
+        consider(right, inner: .right, outer: .farRight)
+
+        guard let best else { return nil }
+        return Hazard(kind: .obstacle, mask: best.mask, distanceMeters: best.distance)
     }
 }

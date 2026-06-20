@@ -35,7 +35,14 @@ struct DirectionsClient {
         ]
         guard let url = components?.url else { throw DirectionsError.badURL }
 
-        let (data, response) = try await URLSession.shared.data(from: url)
+        // Send the bundle id so an "iOS apps" key restriction in Google Cloud accepts this direct
+        // web-service call. Without this header, that restriction would reject the request.
+        var request = URLRequest(url: url)
+        if let bundleID = Bundle.main.bundleIdentifier {
+            request.setValue(bundleID, forHTTPHeaderField: "X-Ios-Bundle-Identifier")
+        }
+
+        let (data, response) = try await URLSession.shared.data(for: request)
         guard let http = response as? HTTPURLResponse else { throw DirectionsError.http(-1) }
         guard http.statusCode == 200 else { throw DirectionsError.http(http.statusCode) }
 

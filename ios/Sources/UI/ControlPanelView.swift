@@ -211,6 +211,7 @@ struct ControlPanelView: View {
             LabeledRow("Nearest ahead", model.depth.nearestMeters < 0
                 ? "—"
                 : String(format: "%.2f m", model.depth.nearestMeters))
+            LabeledRow("Bands L / C / R", bandText)
             LabeledRow("Obstacle", model.depth.obstacleAhead
                 ? "WITHIN \(format(model.depth.thresholdMeters)) m"
                 : "clear")
@@ -287,6 +288,12 @@ struct ControlPanelView: View {
         guard let loc = model.location.location else { return .pending }
         if loc.horizontalAccuracy < 0 { return .fail }
         return loc.horizontalAccuracy < 50 ? .pass : .pending
+    }
+
+    private var bandText: String {
+        let bands = model.depth.bands
+        func fmt(_ value: Double) -> String { value < 0 ? "—" : String(format: "%.1f", value) }
+        return "\(fmt(bands.left)) / \(fmt(bands.center)) / \(fmt(bands.right))"
     }
 
     private var depthStatus: CardStatus {
