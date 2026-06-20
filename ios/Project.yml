@@ -1,0 +1,48 @@
+name: WAND
+options:
+  bundleIdPrefix: com.samuelgerungan
+  deploymentTarget:
+    iOS: "17.0"
+  createIntermediateGroups: true
+settings:
+  base:
+    SWIFT_VERSION: "6.0"
+    DEVELOPMENT_TEAM: "8K9T7N9LHM"
+    CODE_SIGN_STYLE: Automatic
+    SWIFT_STRICT_CONCURRENCY: complete
+targets:
+  WAND:
+    type: application
+    platform: iOS
+    sources:
+      - path: Sources
+    info:
+      path: Sources/Info.plist
+      properties:
+        CFBundleDisplayName: WAND
+        UILaunchScreen: {}
+        UIApplicationSceneManifest:
+          UIApplicationSupportsMultipleScenes: false
+        UISupportedInterfaceOrientations:
+          - UIInterfaceOrientationPortrait
+        NSLocationWhenInUseUsageDescription: WAND reads heading and GPS to compute which way to turn.
+        NSMotionUsageDescription: WAND reads the accelerometer and gyroscope for motion features.
+        NSCameraUsageDescription: WAND uses the LiDAR depth camera to sense nearby obstacles.
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.samuelgerungan.WAND
+        TARGETED_DEVICE_FAMILY: "1"
+        GENERATE_INFOPLIST_FILE: NO
+        SUPPORTS_MACCATALYST: NO
+  WANDTests:
+    type: bundle.unit-test
+    platform: iOS
+    sources:
+      - path: Tests
+    dependencies:
+      - target: WAND
+    settings:
+      base:
+        GENERATE_INFOPLIST_FILE: YES
+        TEST_HOST: "$(BUILT_PRODUCTS_DIR)/WAND.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/WAND"
+        BUNDLE_LOADER: "$(TEST_HOST)"

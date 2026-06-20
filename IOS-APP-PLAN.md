@@ -2,7 +2,7 @@
 
 The engineering plan for the iOS app that owns Tier-2 of WAND. This realizes the phone responsibilities described in `docs/01-architecture.md` and `docs/04-phone-side.md`. Those docs own the product spec and the wire protocol. This doc owns how we build the app that satisfies them.
 
-Status: iOS-native track. Applies once the team confirms Swift at the alignment meeting. Craft rules live in [`SWIFT.md`](SWIFT.md).
+Status: native iOS Swift is the chosen stack. The base app is scaffolded and compiling under Swift 6 strict concurrency in [`ios/`](ios/). Craft rules live in [`SWIFT.md`](SWIFT.md). The per-module build contract (the one decision function, ownership of each tricky byte, the bearing-to-bytes table) lives in [`docs/11-phone-app-design-spec.md`](docs/11-phone-app-design-spec.md); when an implementation detail here and there disagree, `docs/11` wins.
 
 ## What the phone is responsible for
 
@@ -19,28 +19,33 @@ Everything below serves those four jobs. Nothing else ships before they work.
 
 Service-oriented with one main-actor app model on top. Features are vertical slices, not horizontal layers.
 
+A check means the module exists and compiles in the base scaffold. The rest are planned.
+
 ```
-WANDApp (@main)
-  └── AppModel  (@MainActor, @Observable)   owns app state, wires services together
+WANDApp (@main)                                                              [x]
+  └── AppModel  (@MainActor, @Observable)   wires services, runs staging loop [x]
+        │     WANDConfig         one home for the tunable numbers             [x]
         │
         ├── Routing/
-        │     RouteEngine        decides quadrant + event from position and heading
-        │     DirectionsClient   one Google Maps Directions call, caches maneuvers
-        │     Bearing            pure geometry: haversine, relative bearing, quadrant
+        │     Bearing            pure geometry: haversine, relative bearing   [x]
+        │     RouteEngine        QuadrantMapper + calibration + current cue   [x]
+        │     DirectionsClient   one Google Maps Directions call, caches it   [ ]
         │
         ├── Sensors/
-        │     LocationService    CLLocationManager: GPS + true heading (port from probe)
-        │     MotionService      CMMotionManager: accel + gyro at 50 Hz (port from probe)
+        │     LocationService    CLLocationManager: GPS + true heading        [x]
+        │     MotionService      CMMotionManager: accel + gyro at 50 Hz       [x]
+        │     DepthService       ARKit LiDAR scene depth: nearest obstacle    [x]
         │
         ├── Networking/
-        │     LC2Transmitter     actor: UDP socket + 100 ms heartbeat loop
-        │     LC2Packet          codec: encode an event to bytes per docs/03-protocol.md
+        │     LC2Packet          codec: event to 4 bytes per docs/03          [x]
+        │     LC2Transmitter     actor: UDP socket + 100 ms heartbeat loop    [x]
         │
         ├── Replay/
-        │     RouteReplayer      feeds pre-recorded samples into RouteEngine for the demo
+        │     RouteReplayer      feeds recorded samples into RouteEngine      [ ]
         │
         └── UI/
-              ControlPanelView   status, route picker, live/replay toggle, packet log
+              ControlPanelView   one card per subsystem, nav bench, link      [x]
+              Cards              reusable status card + labeled row           [x]
 ```
 
 ## The critical path, in code terms
@@ -73,18 +78,30 @@ Live outdoor input is a runtime toggle on top of the same engine, not a separate
 
 The vision-danger packet (`0x10` in the architecture) originates on the Coral board, not the phone, so the phone never emits it. The app only needs to not collide with that opcode space.
 
+## Depth sensing (LiDAR)
+
+The iPhone 15 Pro Max has a LiDAR scanner, and `DepthService` reads it through ARKit scene depth. It samples a small patch at the center of the depth map and reports the nearest distance straight ahead, plus an "obstacle within threshold" flag. ARKit hands frames to a background queue, so the service pulls the nearest distance off the depth buffer on that queue and hops only the `Double` to the main actor. The non-Sendable `ARFrame` never crosses an isolation boundary.
+
+This is the piece that does not yet have a home in the protocol. The phone's LiDAR gives raw proximity, which is exactly what the deferred Tier-1 obstacle reflex needed; `docs/01-architecture.md` deferred Tier-1 only because there was no ToF sensor in hand. The phone is the ToF sensor. So the phone could revive a Tier-1 "something is right in front of you" cue with no extra hardware.
+
+What it cannot do yet is emit that cue. The LC2 pattern vocabulary is hard-capped at four in `docs/03-protocol.md`, and a phone-side obstacle event would need a new event code plus a team vote. So for now `DepthService` only senses and surfaces the reading in the UI. Wiring it to the belt is a team decision, not a unilateral one. See the open questions.
+
+There is also a live tension with `docs/11-phone-app-design-spec.md`, which recommends dropping `NSCameraUsageDescription` because Tier-2 has no camera feature. ARKit depth needs that permission. The LiDAR capability was an explicit ask, so the permission stays for now, but the team should reconcile the two before the demo rather than let the docs drift.
+
 ## Build order during the hack
 
-Aligns with the gates in `docs/07-timeline.md`. Each step is shippable on its own and de-risks the next.
+Aligns with the gates in `docs/07-timeline.md`. The base scaffold already covers the structure for steps 1 through 3; the work left is wiring real data through them.
 
-1. **Port the two sensor services from the probe** and confirm heading and GPS read clean on the demo phone. This is already proven hardware, so it should be an hour, not a night.
-2. **Stand up `LC2Transmitter` and `LC2Packet`** and fire a hardcoded turn-left packet at the ESP32 on the 100 ms heartbeat. Belt twitches on command. This proves the radio link before any routing exists.
-3. **Build `Bearing` and `RouteEngine` against a hardcoded two-point route** with unit tests on the geometry. No Maps yet. Walk in a hallway, watch the staged event change.
+1. **Sensor services ported.** `LocationService` and `MotionService` carry the probe's proven configuration into the Swift 6 `@Observable` shell. Confirm heading and GPS read clean on the demo phone.
+2. **`LC2Transmitter` and `LC2Packet` stood up.** The "Send test cue" button on the control panel fires a known packet on the 100 ms heartbeat. This is the M0 link check: belt twitches on command.
+3. **`Bearing` and `QuadrantMapper` built and unit tested.** The nav bench card drives the full heading-to-cue path: calibrate, set a target bearing, rotate the phone, watch the cue change and transmit. Add the `RouteEngine` hysteresis deadband next, per `docs/11`.
 4. **Add `RouteReplayer` and a recorded route.** This is the demo path. Get it solid before touching live Maps.
 5. **Add `DirectionsClient`** for the live bonus. Falls back to the cached route on any failure.
-6. **Polish `ControlPanelView`**: connection status, current cue, packet log, live/replay toggle. The operator UI follows the accessibility rules in `SWIFT.md`.
+6. **Harden `ControlPanelView`** for the demo: packet log, live/replay toggle, larger touch targets.
 
 If time runs short, the cut line is after step 4. Replay demo plus a working belt is a complete story. Live Maps is the part the pitch can disclose as a stretch.
+
+The base diverges from `docs/11` in one place worth noting: the staging loop runs at 10 Hz, not the 1 Hz the contract specifies for the GPS-driven path. That is deliberate for the bench, where the loop is driven by live heading and a faster refresh makes the cue feel responsive while rotating the phone. When GPS and Maps land, the cadence follows `docs/11` (1 Hz poll).
 
 ## What this app is not
 
@@ -92,8 +109,9 @@ If time runs short, the cut line is after step 4. Replay demo plus a working bel
 - Not the vision tier. That is Coral-side, conditional, and described in `docs/05-vision-tier.md`.
 - Not a general navigation app. It computes one thing: which quadrant to tap next. Everything else is in service of that.
 
-## Open questions for the alignment meeting
+## Open questions for the team
 
-- Confirm Swift over Expo. This plan assumes Swift. If the team picks Expo, the architecture carries over but the language and frameworks change.
-- Confirm the UDP transport choice for the phone-to-ESP32 link matches what `docs/04-phone-side.md` lands on.
-- Decide whether the recorded replay route is captured before the hack or during setup on Saturday.
+- **LiDAR over LC2.** Does a phone-side obstacle cue ship? If yes, it needs a new LC2 event code and a pattern (reuse, since the vocabulary is capped at four), and it has to deconflict with Coral's Tier-3 vision-danger. If no, `DepthService` stays a sensing-only readout. Decide before wiring it to the belt.
+- **Camera permission.** `docs/11` wants `NSCameraUsageDescription` dropped; LiDAR needs it. Reconcile so the Info.plist and the spec agree.
+- **UDP transport.** Confirm the phone-to-ESP32 link host and port match what the ESP32 firmware listens on. The control panel defaults to `192.168.4.1:9999`; change it there or in `AppModel`.
+- **Replay route.** Decide whether the recorded replay route is captured before the hack or during setup on Saturday.
