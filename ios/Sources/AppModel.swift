@@ -32,6 +32,10 @@ final class AppModel {
     let vision = VisionHazardSource()
     let audio = AudioCueSink()
 
+    /// Demo visualizer modules. `camera` runs the preview; `detections` is Cole's CV plug point.
+    let camera = CameraService()
+    let detections = DetectionStore()
+
     /// Navigation: software simulation today, live Google Maps when a key is entered.
     let simulator = RouteSimulator()
     var mode: DriveMode = .bench

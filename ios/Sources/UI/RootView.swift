@@ -10,6 +10,8 @@ struct RootView: View {
         TabView {
             ProductionView(model: model)
                 .tabItem { Label("Operate", systemImage: "figure.walk") }
+            DemoView(model: model)
+                .tabItem { Label("Demo", systemImage: "eye") }
             ControlPanelView(model: model)
                 .tabItem { Label("Diagnostics", systemImage: "slider.horizontal.3") }
         }
