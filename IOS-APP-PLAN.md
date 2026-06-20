@@ -86,7 +86,7 @@ This is the piece that does not yet have a home in the protocol. The phone's LiD
 
 What it cannot do yet is emit that cue. The LC2 pattern vocabulary is hard-capped at four in `docs/03-protocol.md`, and a phone-side obstacle event would need a new event code plus a team vote. So for now `DepthService` only senses and surfaces the reading in the UI. Wiring it to the belt is a team decision, not a unilateral one. See the open questions.
 
-There is also a live tension with `docs/11-phone-app-design-spec.md`, which recommends dropping `NSCameraUsageDescription` because Tier-2 has no camera feature. ARKit depth needs that permission. The LiDAR capability was an explicit ask, so the permission stays for now, but the team should reconcile the two before the demo rather than let the docs drift.
+The camera permission question is settled. Sam owns the project design and made the call: LiDAR depth is part of the app, and since ARKit depth needs `NSCameraUsageDescription`, that key stays. `docs/11-phone-app-design-spec.md` has been updated to match, so there is no drift.
 
 ## Build order during the hack
 
@@ -111,7 +111,7 @@ The base diverges from `docs/11` in one place worth noting: the staging loop run
 
 ## Open questions for the team
 
-- **LiDAR over LC2.** Does a phone-side obstacle cue ship? If yes, it needs a new LC2 event code and a pattern (reuse, since the vocabulary is capped at four), and it has to deconflict with Coral's Tier-3 vision-danger. If no, `DepthService` stays a sensing-only readout. Decide before wiring it to the belt.
-- **Camera permission.** `docs/11` wants `NSCameraUsageDescription` dropped; LiDAR needs it. Reconcile so the Info.plist and the spec agree.
+- **Camera permission.** Resolved. LiDAR is in, so `NSCameraUsageDescription` stays. `docs/11` updated to match.
+- **LiDAR over LC2.** Open. The phone now senses obstacles, but emitting a belt cue needs a new LC2 event code and a pattern (reuse, since the vocabulary is capped at four), and it has to deconflict with Coral's Tier-3 vision-danger. Until that lands, `DepthService` is a sensing-only readout. This is the one piece that touches the ESP32 firmware lane, so it is worth a quick sync with whoever owns the belt before wiring it.
 - **UDP transport.** Confirm the phone-to-ESP32 link host and port match what the ESP32 firmware listens on. The control panel defaults to `192.168.4.1:9999`; change it there or in `AppModel`.
 - **Replay route.** Decide whether the recorded replay route is captured before the hack or during setup on Saturday.
