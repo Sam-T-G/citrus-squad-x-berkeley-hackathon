@@ -6,6 +6,7 @@ import SwiftUI
 /// one injected `AppModel`.
 struct ProductionView: View {
     let model: AppModel
+    @State private var flash = false
 
     var body: some View {
         VStack(spacing: 24) {
@@ -15,6 +16,24 @@ struct ProductionView: View {
             controls
         }
         .padding()
+        .overlay {
+            Color.green
+                .opacity(flash ? 0.4 : 0)
+                .ignoresSafeArea()
+                .allowsHitTesting(false)
+        }
+        .onChange(of: model.resolved.event) { _, newEvent in
+            Feedback.cueChanged(to: newEvent)
+        }
+    }
+
+    /// Brief green flash to confirm calibration without needing the screen.
+    private func flashScreen() {
+        withAnimation(.easeOut(duration: 0.12)) { flash = true }
+        Task { @MainActor in
+            try? await Task.sleep(for: .milliseconds(320))
+            withAnimation(.easeIn(duration: 0.35)) { flash = false }
+        }
     }
 
     // MARK: - Header
@@ -57,6 +76,11 @@ struct ProductionView: View {
             Text(visual.text)
                 .font(.system(size: 40, weight: .heavy, design: .rounded))
                 .foregroundStyle(visual.color)
+            if model.simulator.isRunning, model.route.distanceToNext > 0 {
+                Text(String(format: "in %.0f m", model.route.distanceToNext))
+                    .font(.title3.weight(.semibold))
+                    .foregroundStyle(.secondary)
+            }
         }
         .frame(maxWidth: .infinity)
         .padding(.vertical, 44)
@@ -76,8 +100,13 @@ struct ProductionView: View {
                 } else {
                     bigButton("Connect belt", tint: .accentColor) { model.startLink() }
                 }
-                bigButton("Calibrate", tint: .gray) { model.calibrate() }
-                    .disabled(model.location.trueHeading < 0)
+                bigButton("Calibrate", tint: .gray) {
+                    if model.calibrate() {
+                        Feedback.calibrationConfirmed()
+                        flashScreen()
+                    }
+                }
+                .disabled(model.location.trueHeading < 0)
             }
             HStack(spacing: 12) {
                 bigButton("Load route", tint: .gray) { model.loadDemoRoute() }

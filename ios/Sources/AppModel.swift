@@ -93,9 +93,11 @@ final class AppModel {
     // MARK: - Operator actions
 
     /// Capture the phone-forward to body-forward offset. See `docs/04-phone-side.md` calibration.
-    func calibrate() {
-        guard location.trueHeading >= 0 else { return }
+    @discardableResult
+    func calibrate() -> Bool {
+        guard location.trueHeading >= 0 else { return false }
         route.calibrate(phoneHeading: location.trueHeading)
+        return true
     }
 
     /// Fire one known cue so we can confirm the belt reacts. This is the M0 "hello packet" check.
