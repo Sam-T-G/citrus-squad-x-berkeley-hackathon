@@ -1,11 +1,11 @@
 import SwiftUI
 import CoreLocation
 
-/// The operator screen. One card per subsystem: link, nav bench, heading, GPS, depth, motion.
-/// This is the M0-M4 driver: start the link, calibrate, set a target bearing, rotate the phone,
-/// and confirm the right cue transmits.
+/// The diagnostics console: one card per subsystem (link, navigation, heading, GPS, depth, motion,
+/// thermal soak) for bench-testing every sensor and the belt link. The clean operator screen for
+/// the demo is `ProductionView`; both share one injected `AppModel`.
 struct ControlPanelView: View {
-    @State private var model = AppModel()
+    let model: AppModel
 
     var body: some View {
         @Bindable var model = model
@@ -329,5 +329,5 @@ struct ControlPanelView: View {
 }
 
 #Preview {
-    ControlPanelView()
+    ControlPanelView(model: AppModel())
 }

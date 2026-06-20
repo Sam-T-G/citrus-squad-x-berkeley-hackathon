@@ -4,7 +4,7 @@ import SwiftUI
 struct WANDApp: App {
     var body: some Scene {
         WindowGroup {
-            ControlPanelView()
+            RootView()
         }
     }
 }
