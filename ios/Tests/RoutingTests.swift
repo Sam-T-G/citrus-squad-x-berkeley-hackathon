@@ -34,10 +34,10 @@ struct BearingTests {
 
 /// Walks the quadrant table from `docs/04-phone-side.md`. These eight checks are the M4 gate.
 struct QuadrantMapperTests {
-    @Test func centerlineIsNoTap() {
-        #expect(QuadrantMapper.cue(forRelativeBearing: 0) == nil)
-        #expect(QuadrantMapper.cue(forRelativeBearing: 5) == nil)
-        #expect(QuadrantMapper.cue(forRelativeBearing: 355) == nil)
+    @Test func onCourseTapsForward() {
+        #expect(QuadrantMapper.cue(forRelativeBearing: 0) == Cue(event: .forward, mask: .front))
+        #expect(QuadrantMapper.cue(forRelativeBearing: 5) == Cue(event: .forward, mask: .front))
+        #expect(QuadrantMapper.cue(forRelativeBearing: 355) == Cue(event: .forward, mask: .front))
     }
 
     @Test func slightRight() {
@@ -45,15 +45,15 @@ struct QuadrantMapperTests {
     }
 
     @Test func sharpRight() {
-        #expect(QuadrantMapper.cue(forRelativeBearing: 90) == Cue(event: .turnNow, mask: .farRight))
+        #expect(QuadrantMapper.cue(forRelativeBearing: 90) == Cue(event: .turnNow, mask: .right))
     }
 
     @Test func turnAround() {
-        #expect(QuadrantMapper.cue(forRelativeBearing: 180) == Cue(event: .turnAround, mask: .bothFar))
+        #expect(QuadrantMapper.cue(forRelativeBearing: 180) == Cue(event: .turnAround, mask: .rotate))
     }
 
     @Test func sharpLeft() {
-        #expect(QuadrantMapper.cue(forRelativeBearing: 270) == Cue(event: .turnNow, mask: .farLeft))
+        #expect(QuadrantMapper.cue(forRelativeBearing: 270) == Cue(event: .turnNow, mask: .left))
     }
 
     @Test func slightLeft() {

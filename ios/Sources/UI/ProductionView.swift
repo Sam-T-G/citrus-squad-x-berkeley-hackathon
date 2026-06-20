@@ -12,6 +12,7 @@ struct ProductionView: View {
         VStack(spacing: 24) {
             header
             cueDisplay
+            BeltView(mask: model.resolved.mask, accent: Self.visual(for: model.resolved).color)
             Spacer()
             controls
         }
@@ -140,12 +141,14 @@ struct ProductionView: View {
         switch cue.event {
         case .idle:
             return ("Walk on", "figure.walk", .secondary)
+        case .forward:
+            return ("Forward", "arrow.up", .blue)
         case .turnSlight:
             return cue.mask.contains(.right)
                 ? ("Slight right", "arrow.turn.up.right", .blue)
                 : ("Slight left", "arrow.turn.up.left", .blue)
         case .turnNow:
-            return cue.mask.contains(.farRight)
+            return cue.mask.contains(.right)
                 ? ("Turn right", "arrow.turn.up.right", .blue)
                 : ("Turn left", "arrow.turn.up.left", .blue)
         case .turnAround:

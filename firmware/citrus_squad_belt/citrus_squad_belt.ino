@@ -4,8 +4,8 @@
 // this firmware drives the four tap servos to match. The wire format is docs/03-protocol.md:
 //
 //   byte 0  event     (0x00 idle, 0x20 turn-slight, 0x21 turn-now, 0x22 turn-around,
-//                      0x23 arrived, 0x10 vision-danger, 0x40 obstacle-near)
-//   byte 1  mask      bit0 Far Left, bit1 Left, bit2 Right, bit3 Far Right
+//                      0x23 arrived, 0x24 forward, 0x10 vision-danger, 0x40 obstacle-near)
+//   byte 1  mask      bit0 Front (forward), bit1 Left (rotate), bit2 Right (rotate), bit3 Back (proximity)
 //   byte 2  intensity 0..255, scales tap travel
 //   byte 3  sequence  rolling counter, for drop detection
 //
@@ -27,10 +27,12 @@ static const uint8_t EV_TURN_SLIGHT   = 0x20;
 static const uint8_t EV_TURN_NOW      = 0x21;
 static const uint8_t EV_TURN_AROUND   = 0x22;
 static const uint8_t EV_ARRIVED       = 0x23;
+static const uint8_t EV_FORWARD       = 0x24;
 static const uint8_t EV_OBSTACLE_NEAR = 0x40;
 
 Servo servos[4];
-const int servoPins[4] = { PIN_FAR_LEFT, PIN_LEFT, PIN_RIGHT, PIN_FAR_RIGHT };
+// Index matches the LC2 mask bits: 0 = front, 1 = left, 2 = right, 3 = back.
+const int servoPins[4] = { PIN_FRONT, PIN_LEFT, PIN_RIGHT, PIN_BACK };
 
 WiFiUDP udp;
 uint8_t packet[8];
@@ -170,8 +172,9 @@ void animate() {
   const unsigned long cycle = TAP_DOWN_MS + TAP_UP_MS;
 
   switch (animEvent) {
+    case EV_FORWARD:
     case EV_TURN_SLIGHT:
-      // Single tap, then hold neutral.
+      // Single tap, then hold neutral. Front for forward, Left/Right for a gentle rotate.
       drivePulses(1, elapsed, cycle);
       break;
 
@@ -183,12 +186,12 @@ void animate() {
 
     case EV_VISION_DANGER:
     case EV_OBSTACLE_NEAR:
-      // Sustained tap-train while the hazard is active.
+      // Sustained tap-train on Back while the hazard is active.
       driveTrain(elapsed, cycle);
       break;
 
     case EV_ARRIVED:
-      // Sweep Far Left -> Left -> Right -> Far Right, once, ignoring the mask.
+      // Sweep front -> left -> right -> back, once, ignoring the mask.
       driveSweep(elapsed);
       break;
 

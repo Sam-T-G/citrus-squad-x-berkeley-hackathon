@@ -32,12 +32,13 @@ final class AudioCueSink: CueSink {
     /// Map a cue to spoken words. Placeholder vocabulary; this is the part Josh designs.
     private func phrase(for cue: ResolvedCue) -> String? {
         switch cue.event {
+        case .forward: return "forward"
         case .turnSlight: return cue.mask.contains(.right) ? "slight right" : "slight left"
-        case .turnNow: return cue.mask.contains(.farRight) ? "turn right" : "turn left"
+        case .turnNow: return cue.mask.contains(.right) ? "turn right" : "turn left"
         case .turnAround: return "turn around"
         case .arrived: return "arrived"
-        case .obstacleNear: return "obstacle ahead"
-        case .visionDanger: return "person ahead"
+        case .obstacleNear: return "obstacle behind"
+        case .visionDanger: return "person near"
         case .idle: return nil
         }
     }

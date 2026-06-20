@@ -17,19 +17,19 @@ enum QuadrantMapper {
         let angle = Bearing.normalize(bearing)
         switch angle {
         case 0..<10, 350..<360:
-            return nil                                              // centerline forward, no tap
+            return Cue(event: .forward, mask: .front)              // on course, tap Front
         case 10..<60:
-            return Cue(event: .turnSlight, mask: .right)
+            return Cue(event: .turnSlight, mask: .right)           // gentle right
         case 60..<120:
-            return Cue(event: .turnNow, mask: .farRight)
+            return Cue(event: .turnNow, mask: .right)              // sharp right
         case 120..<240:
-            return Cue(event: .turnAround, mask: .bothFar)
+            return Cue(event: .turnAround, mask: .rotate)          // U-turn, both rotate motors
         case 240..<300:
-            return Cue(event: .turnNow, mask: .farLeft)
+            return Cue(event: .turnNow, mask: .left)               // sharp left
         case 300..<350:
-            return Cue(event: .turnSlight, mask: .left)
+            return Cue(event: .turnSlight, mask: .left)            // gentle left
         default:
-            return nil
+            return Cue(event: .forward, mask: .front)
         }
     }
 }

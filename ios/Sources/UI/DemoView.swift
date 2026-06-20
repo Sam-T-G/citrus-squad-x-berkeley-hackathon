@@ -14,6 +14,7 @@ struct DemoView: View {
         ScrollView {
             VStack(spacing: 16) {
                 cueStrip
+                beltPanel
                 MapPanel(model: model)
                 CameraPanel(camera: model.camera, detections: model.detections)
                 DepthPanel(model: model)
@@ -21,6 +22,18 @@ struct DemoView: View {
             .padding()
         }
         .background(Color(.systemBackground))
+    }
+
+    private var beltPanel: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Label("Belt", systemImage: "circle.grid.cross").font(.headline)
+            BeltView(mask: model.resolved.mask,
+                     accent: ProductionView.visual(for: model.resolved).color)
+                .frame(maxWidth: .infinity)
+        }
+        .padding()
+        .background(Color(.systemGray6))
+        .clipShape(RoundedRectangle(cornerRadius: 16))
     }
 
     private var cueStrip: some View {

@@ -125,25 +125,15 @@ extension DepthService: HazardSource {
                            threshold: thresholdMeters, near: CitrusSquadConfig.dangerNearMeters)
     }
 
-    /// Pure band-to-mask mapping per the `docs/12` table. The closest band within threshold wins;
-    /// inside `near` it escalates a side band to its Far servo. Static and pure so it is unit tested.
+    /// Pure proximity mapping. Any obstacle within threshold across the three sampled bands warns on
+    /// the Back motor; how close it is rides on the intensity, not the motor. Static and pure so it
+    /// is unit tested. (`near` is kept for call-site stability and future grading.)
     nonisolated static func hazard(left: Double, center: Double, right: Double,
                                    threshold: Double, near: Double) -> Hazard? {
-        var best: (mask: QuadrantMask, distance: Double)?
-
-        func consider(_ distance: Double, inner: QuadrantMask, outer: QuadrantMask) {
-            guard distance > 0, distance <= threshold else { return }
-            let mask = distance <= near ? outer : inner
-            if best == nil || distance < best!.distance {
-                best = (mask, distance)
-            }
-        }
-
-        consider(left, inner: .left, outer: .farLeft)
-        consider(center, inner: .centerMass, outer: .centerMass)
-        consider(right, inner: .right, outer: .farRight)
-
-        guard let best else { return nil }
-        return Hazard(kind: .obstacle, mask: best.mask, distanceMeters: best.distance)
+        let nearest = [left, center, right]
+            .filter { $0 > 0 && $0 <= threshold }
+            .min()
+        guard let distance = nearest else { return nil }
+        return Hazard(kind: .obstacle, mask: .back, distanceMeters: distance)
     }
 }

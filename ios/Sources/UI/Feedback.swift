@@ -19,6 +19,8 @@ enum Feedback {
             UINotificationFeedbackGenerator().notificationOccurred(.success)
         case .obstacleNear, .visionDanger:
             UINotificationFeedbackGenerator().notificationOccurred(.warning)
+        case .forward:
+            UIImpactFeedbackGenerator(style: .light).impactOccurred()
         case .turnSlight, .turnNow, .turnAround:
             UIImpactFeedbackGenerator(style: .medium).impactOccurred()
         case .idle:
