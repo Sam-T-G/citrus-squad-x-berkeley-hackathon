@@ -2,11 +2,11 @@
 
 ## What we are building
 
-**WAND** (Wearable Assistive Navigation Device) is a haptic navigation belt for blind and low-vision wearers. A chest-mounted phone reads Google Maps walking directions, computes the body-relative bearing of the next turn using the phone's compass and IMU, and fires the matching quadrant on a four-servo belt as a discrete tap.
+**Citrus Squad** (Wearable Assistive Navigation Device) is a haptic navigation belt for blind and low-vision wearers. A chest-mounted phone reads Google Maps walking directions, computes the body-relative bearing of the next turn using the phone's compass and IMU, and fires the matching quadrant on a four-servo belt as a discrete tap.
 
-If a Coral Dev Board vision layer ships, it adds a person-in-path safety signal: when the camera detects someone walking into the wearer's path, the belt fires a sustained tap-train on the relevant quadrant.
+The same phone also senses what is ahead. Its LiDAR scanner reads proximity, so the belt fires a sustained tap-train when something is close on a given side. The camera adds a person-in-path signal on top as a stretch. Both run on the phone, so no extra hardware rides on the belt. The design is in [`12-perception-and-safety-design.md`](12-perception-and-safety-design.md).
 
-The pitch is one sentence: "WAND tells you which way to turn, by tapping you in the direction you should go."
+The pitch is one sentence: "Citrus Squad tells you which way to turn, by tapping you in the direction you should go."
 
 ## Track
 
@@ -14,14 +14,14 @@ The pitch is one sentence: "WAND tells you which way to turn, by tapping you in 
 
 ## What it is not
 
-- Not a cane replacement. Cane catches things at foot level; WAND adds upper-body and navigation awareness on top.
+- Not a cane replacement. Cane catches things at foot level; Citrus Squad adds upper-body and navigation awareness on top.
 - Not a clinical device. No IP rating, no medical claims, no EMF certifications.
 - Not voice or audio. Haptic only.
 - Not indoor navigation. Outdoor GPS routes only.
 
 ## Current direction (subject to alignment meeting)
 
-Frontrunner is WAND as described. The alignment meeting at the start of the hack confirms direction and may pivot. Until that happens, every spec in this folder is "current best plan," not "locked."
+Frontrunner is Citrus Squad as described. The alignment meeting at the start of the hack confirms direction and may pivot. Until that happens, every spec in this folder is "current best plan," not "locked."
 
 Locks in place (do not reopen without team consensus):
 
@@ -32,14 +32,14 @@ Locks in place (do not reopen without team consensus):
 
 ## Why this design
 
-The shortest version: most assistive haptic projects either build a vibration vest for obstacle avoidance (solved problem; cane does it better) or build a phone app that talks directions (solved problem; Google Maps does it). The interesting space is in between — directional cues that don't require listening to headphones in traffic. That is the niche WAND fits.
+The shortest version: most assistive haptic projects either build a vibration vest for obstacle avoidance (solved problem; cane does it better) or build a phone app that talks directions (solved problem; Google Maps does it). The interesting space is in between — directional cues that don't require listening to headphones in traffic. That is the niche Citrus Squad fits.
 
-Tier-3 vision adds a "what does the camera see right now" signal that a cane cannot deliver. It is conditional because the team is learning Coral Edge TPU from cold; if the pre-event learning sprint slips, vision cuts first.
+The phone's LiDAR and camera add a "what is right in front of me" signal that a cane cannot deliver at upper-body height. Proximity from LiDAR is a base layer because it needs no new hardware and works in any lighting. Person-in-path from the camera is a stretch on top. The Coral Dev Board, which an earlier plan used for this, is now an optional sponsor-angle stretch only.
 
 ## Status
 
-- **Idea direction:** WAND (frontrunner, confirmed at alignment meeting).
-- **Stack:** open between Expo (React Native) and native iOS (Swift). Native iOS already proven viable on the demo phone (see [`10-validated.md`](10-validated.md)).
-- **Demo phone:** iPhone 15 Pro Max running iOS 27.0 beta. Phone capabilities verified.
-- **Hardware:** four hobby servos, one ESP32, one Coral Dev Board, all in hand.
+- **Idea direction:** Citrus Squad (frontrunner, confirmed at alignment meeting).
+- **Stack:** native iOS Swift, confirmed at the alignment meeting. The base app is scaffolded and compiling in [`ios/`](../ios/). Proven viable on the demo phone (see [`10-validated.md`](10-validated.md)).
+- **Demo phone:** iPhone 15 Pro Max running iOS 27.0 beta. Phone capabilities verified, LiDAR and camera included.
+- **Hardware:** four hobby servos and one ESP32 drive the belt. The phone's own LiDAR and camera do the sensing. One Coral Dev Board is in hand and held in reserve for the optional sponsor stretch.
 - **Hack window:** Saturday June 20, 11:00 AM through Sunday June 21, 11:00 AM. 24 hours.

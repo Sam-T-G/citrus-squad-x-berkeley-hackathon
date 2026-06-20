@@ -17,6 +17,10 @@ If you are picking this up fresh, read in this order:
 9. [`08-team-roles.md`](08-team-roles.md) — who owns what
 10. [`09-demo-and-pitch.md`](09-demo-and-pitch.md) — demo plan and pitch beats
 11. [`10-validated.md`](10-validated.md) — what we have already verified
+12. [`11-phone-app-design-spec.md`](11-phone-app-design-spec.md) — phone-app build contract (resolves 03 + 04 into one decision function)
+13. [`12-perception-and-safety-design.md`](12-perception-and-safety-design.md) — phone LiDAR + camera safety tier, demo and user hardened
+
+The Swift implementation runbook lives at the repo root in [`HANDOFF.md`](../HANDOFF.md). Read it when picking up the iOS app.
 
 ## Update protocol
 

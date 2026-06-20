@@ -31,8 +31,17 @@ Four bytes per packet. Connectionless UDP (default) or UART (if Coral uses Optio
 | `0x22` | turn-around | triple tap on both Far servos | 2 | U-turn case. Same pattern as turn-now, different mask. |
 | `0x23` | arrived | sweep left-to-right | 2 | Phone emits at the final maneuver. Also reused for calibration confirmation per [`04-phone-side.md`](04-phone-side.md). |
 | `0x30` | reserved | — | — | Was vision-context in an earlier plan. Do not reuse. |
+| `0x40` | obstacle-near (provisional) | sustained tap-train | 1 | Phone emits from its LiDAR scene-depth read when something is closer than the threshold straight ahead. Reuses the sustained tap-train pattern, so it stays inside the four-pattern cap. See the obstacle tier note below. |
 
 Other byte 0 values are undefined. ESP32 should ignore unknown codes silently and log a counter.
+
+## Obstacle tier (phone LiDAR, provisional)
+
+`0x40 obstacle-near` revives the Tier-1 obstacle reflex that `01-architecture.md` deferred for lack of a ToF sensor. The iPhone 15 Pro Max has a LiDAR scanner, so the phone is the ToF sensor. `DepthService` samples the center of the scene-depth map and the phone emits `0x40` when the nearest reading is inside `thresholdMeters` (default 1.2 m), masked to center mass (`0x06`).
+
+Because the phone now sends both Tier-1 and Tier-2 on the same channel, it deconflicts locally before it stages: an active obstacle cue takes priority over a route cue for that heartbeat. The wearer feels the obstacle, not the turn, while something is close. Coral's Tier-3 `vision-danger` is still a separate sender and the ESP32 deconfliction rule below is unchanged.
+
+**This whole tier is provisional and changeable at any time.** The code, the threshold, the mask, the priority, even whether it ships at all are open. It is wired now so the team can feel it on the bench and decide. Nothing here is locked, and changing it does not need a ceremony, just an edit and a note to whoever owns the ESP32 firmware.
 
 ## Quadrant mask examples (byte 1)
 

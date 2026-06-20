@@ -1,0 +1,134 @@
+import SwiftUI
+
+/// The production operator screen for the demo. One glanceable display of what the belt is telling
+/// the wearer right now, plus the few controls a run needs: connect the belt, calibrate, run the
+/// route. The full per-sensor diagnostics live in their own tab (`ControlPanelView`). Both share
+/// one injected `AppModel`.
+struct ProductionView: View {
+    let model: AppModel
+
+    var body: some View {
+        VStack(spacing: 24) {
+            header
+            cueDisplay
+            Spacer()
+            controls
+        }
+        .padding()
+    }
+
+    // MARK: - Header
+
+    private var header: some View {
+        HStack(alignment: .top) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Citrus Squad").font(.largeTitle.bold())
+                Text(model.route.isCalibrated ? "calibrated" : "not calibrated")
+                    .font(.caption)
+                    .foregroundStyle(model.route.isCalibrated ? Color.green : Color.secondary)
+            }
+            Spacer()
+            linkBadge
+        }
+    }
+
+    private var linkBadge: some View {
+        let connected = model.transmitting && model.link.connectionState == "ready"
+        let label = connected ? "belt connected" : (model.transmitting ? "linking…" : "belt off")
+        return HStack(spacing: 6) {
+            Circle()
+                .fill(connected ? Color.green : Color.secondary)
+                .frame(width: 10, height: 10)
+            Text(label).font(.caption)
+        }
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel(label)
+    }
+
+    // MARK: - Cue display
+
+    private var cueDisplay: some View {
+        let visual = Self.visual(for: model.resolved)
+        return VStack(spacing: 16) {
+            Image(systemName: visual.symbol)
+                .font(.system(size: 110, weight: .bold))
+                .foregroundStyle(visual.color)
+                .contentTransition(.symbolEffect(.replace))
+            Text(visual.text)
+                .font(.system(size: 40, weight: .heavy, design: .rounded))
+                .foregroundStyle(visual.color)
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.vertical, 44)
+        .background(visual.color.opacity(0.12))
+        .clipShape(RoundedRectangle(cornerRadius: 24))
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("Current cue: \(visual.text)")
+    }
+
+    // MARK: - Controls
+
+    private var controls: some View {
+        VStack(spacing: 12) {
+            HStack(spacing: 12) {
+                if model.transmitting {
+                    bigButton("Disconnect", tint: .gray) { model.stopLink() }
+                } else {
+                    bigButton("Connect belt", tint: .accentColor) { model.startLink() }
+                }
+                bigButton("Calibrate", tint: .gray) { model.calibrate() }
+                    .disabled(model.location.trueHeading < 0)
+            }
+            HStack(spacing: 12) {
+                bigButton("Load route", tint: .gray) { model.loadDemoRoute() }
+                if model.simulator.isRunning {
+                    bigButton("Stop", tint: .gray) { model.stopSimulation() }
+                } else {
+                    bigButton("Run route", tint: .accentColor) { model.startSimulation() }
+                }
+            }
+            Text(model.routeStatus)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+    }
+
+    private func bigButton(_ title: String, tint: Color, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Text(title)
+                .font(.headline)
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 10)
+        }
+        .buttonStyle(.borderedProminent)
+        .tint(tint)
+    }
+
+    // MARK: - Cue visuals
+
+    /// Map the resolved cue to a big direction word, an SF Symbol, and a color.
+    static func visual(for cue: ResolvedCue) -> (text: String, symbol: String, color: Color) {
+        switch cue.event {
+        case .idle:
+            return ("Walk on", "figure.walk", .secondary)
+        case .turnSlight:
+            return cue.mask.contains(.right)
+                ? ("Slight right", "arrow.turn.up.right", .blue)
+                : ("Slight left", "arrow.turn.up.left", .blue)
+        case .turnNow:
+            return cue.mask.contains(.farRight)
+                ? ("Turn right", "arrow.turn.up.right", .blue)
+                : ("Turn left", "arrow.turn.up.left", .blue)
+        case .turnAround:
+            return ("Turn around", "arrow.uturn.down", .blue)
+        case .arrived:
+            return ("Arrived", "checkmark.circle.fill", .green)
+        case .obstacleNear, .visionDanger:
+            return ("Obstacle", "exclamationmark.triangle.fill", .orange)
+        }
+    }
+}
+
+#Preview {
+    ProductionView(model: AppModel())
+}

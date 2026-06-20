@@ -1,0 +1,52 @@
+name: CitrusSquad
+options:
+  bundleIdPrefix: com.citrussquad
+  deploymentTarget:
+    iOS: "17.0"
+  createIntermediateGroups: true
+# Per-developer signing (team + bundle id) lives in Local.xcconfig, which is gitignored.
+# Run ./setup.sh once; it creates Local.xcconfig from Local.xcconfig.example.
+configFiles:
+  Debug: Local.xcconfig
+  Release: Local.xcconfig
+settings:
+  base:
+    SWIFT_VERSION: "6.0"
+    CODE_SIGN_STYLE: Automatic
+    SWIFT_STRICT_CONCURRENCY: complete
+targets:
+  CitrusSquad:
+    type: application
+    platform: iOS
+    sources:
+      - path: Sources
+    info:
+      path: Sources/Info.plist
+      properties:
+        CFBundleDisplayName: CitrusSquad
+        UILaunchScreen: {}
+        UIApplicationSceneManifest:
+          UIApplicationSupportsMultipleScenes: false
+        UISupportedInterfaceOrientations:
+          - UIInterfaceOrientationPortrait
+        NSLocationWhenInUseUsageDescription: CitrusSquad reads heading and GPS to compute which way to turn.
+        NSMotionUsageDescription: CitrusSquad reads the accelerometer and gyroscope for motion features.
+        NSCameraUsageDescription: CitrusSquad uses the LiDAR depth camera to sense nearby obstacles.
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: $(APP_BUNDLE_ID)
+        TARGETED_DEVICE_FAMILY: "1"
+        GENERATE_INFOPLIST_FILE: NO
+        SUPPORTS_MACCATALYST: NO
+  CitrusSquadTests:
+    type: bundle.unit-test
+    platform: iOS
+    sources:
+      - path: Tests
+    dependencies:
+      - target: CitrusSquad
+    settings:
+      base:
+        GENERATE_INFOPLIST_FILE: YES
+        TEST_HOST: "$(BUILT_PRODUCTS_DIR)/CitrusSquad.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/CitrusSquad"
+        BUNDLE_LOADER: "$(TEST_HOST)"

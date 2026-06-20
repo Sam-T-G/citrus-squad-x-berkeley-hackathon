@@ -7,7 +7,7 @@ A teammate wears the belt and the chest-mounted phone. The pitch person stands n
 ### The 30-second beat
 
 ```
-[Pitch person] "WAND tells you which way to turn, by tapping you in the direction
+[Pitch person] "Citrus Squad tells you which way to turn, by tapping you in the direction
                 you should go. Imagine walking through a city without being able
                 to look at your phone."
 [Wearer at lane start] Press Calibrate. Confirmation flash. Walking starts.
@@ -19,7 +19,11 @@ A teammate wears the belt and the chest-mounted phone. The pitch person stands n
                 without ever needing audio or a screen."
 ```
 
-If Tier-3 vision shipped, splice in a 20-second beat between the two turns where an operator walks in front of the wearer and the belt fires the sustained tap-train. Wearer reacts. Pitch person explains.
+### The safety beat (base, ~20 seconds)
+
+Between the two turns, an operator steps into the lane in front of the wearer. The phone LiDAR reads the closing distance and the belt fires the sustained tap-train on the side the obstacle is on. The wearer stops. The pitch person explains that the phone is sensing what is ahead, not just reading a map.
+
+This is a base feature now, not a conditional one, because it runs on the phone's own LiDAR with no extra hardware and works in any lighting. Script it like the turns: the operator approaches on a marked line from a clean start position, on the wearer's cue. If the camera person-detection stretch shipped, the pitch person adds the word "person"; if not, the LiDAR still carries the beat as "obstacle detected." Rehearse it, and if it ever flakes in a dry run, cut it per the common-failure rule below.
 
 ### Why replay, not live GPS
 
@@ -50,7 +54,7 @@ The video is never the primary demo. It is the safety net.
 
 State the problem. State who it's for. State the one-line solution.
 
-> "Cane users get great obstacle avoidance at foot level. What they don't get is route guidance that doesn't require headphones blocking street sounds. WAND is a haptic belt that taps you in the direction your next turn is."
+> "Cane users get great obstacle avoidance at foot level. What they don't get is route guidance that doesn't require headphones blocking street sounds. Citrus Squad is a haptic belt that taps you in the direction your next turn is."
 
 ### Demo (90 seconds)
 
@@ -63,13 +67,13 @@ Pick the two most defensible technical claims and say them clearly:
 - "The phone computes body-relative bearing using its own compass, so the cue is correct regardless of which way the wearer's body is facing."
 - "The belt fires within 250 milliseconds of the cue being decided. We measured this on hardware."
 
-If Tier-3 shipped, add: "The Coral Dev Board on the belt runs MobileNet-SSD on its Edge TPU at 15 FPS and triggers a danger signal in under 200 milliseconds when someone walks into the wearer's path."
+Add the safety claim, which is now a base feature: "The same phone reads its LiDAR scanner to sense what is ahead, and fires a distinct danger pattern when something is close in the wearer's path. It works in any lighting because LiDAR is active infrared." If the camera stretch shipped, add that on-device Vision confirms it is a person.
 
 ### Closing (15 seconds)
 
 State what you would do with another week. Show you have thought past the demo.
 
-> "Next iteration: stairs and overhead obstacle detection from Coral, drop-off sensing for curbs, and an integration with iOS Live Activities so the wearer's phone screen also shows the next turn."
+> "Next iteration: stairs and drop-off detection from the LiDAR depth map, semantic obstacle classes from the camera, and an integration with iOS Live Activities so the wearer's phone screen also shows the next turn."
 
 ## What the pitch deliberately does NOT do
 
@@ -82,7 +86,7 @@ State what you would do with another week. Show you have thought past the demo.
 
 **Ddoski's Lab** (science and engineering). The judging weight is technical depth and real-world application.
 
-The technical-depth angle: three coordinated devices (phone + ESP32 + Coral) talking a custom 4-byte protocol, with deconfliction logic, body-relative bearing math, and on-device CV inference. We can articulate every link in that chain.
+The technical-depth angle: two coordinated devices (phone + ESP32) talking a custom 4-byte protocol, with body-relative bearing math, on-device LiDAR depth sensing, safety-over-direction arbitration, and on-device Vision if the camera stretch ships. The phone does the sensing and the brain; the ESP32 does the deterministic actuation. We can articulate every link in that chain.
 
 The real-world angle: the team-member wearer is the demo. We can describe what a real cane user gains from this signal. The framing is "supplement to the cane," not "replacement for it."
 
@@ -90,7 +94,7 @@ The real-world angle: the team-member wearer is the demo. We can describe what a
 
 Two real candidates:
 
-- **Google.** Coral Edge TPU is a Google product. Maps Directions API is a Google product. If both ship in the demo, the Google angle is genuine and worth pitching to any Google judge.
+- **Google.** Maps Directions API is a Google product and ships in the base. If the optional Coral Edge TPU stretch also ships, the Google angle gets stronger. Either way it is genuine and worth pitching to a Google judge.
 - **Microsoft, Anthropic, or other AI sponsors.** Only if we end up integrating one of their APIs (we are not planning to as of repo creation). Do not retrofit a sponsor angle if it isn't real.
 
 Side prizes are sponsored separately from the main track. Read the sponsor side-prize criteria at check-in and decide whether any are worth a 20-minute side conversation.
@@ -100,7 +104,7 @@ Side prizes are sponsored separately from the main track. Read the sponsor side-
 A short list of things that lose pitches at hackathons; check the dry run against these.
 
 - **The pitch is longer than 3 minutes.** Judges have 8 minutes per team in expo. Three minutes for pitch + demo + closing leaves 5 for questions.
-- **The first 30 seconds doesn't say what the thing is.** If a judge has to wait until minute 2 to learn what WAND is, they have already wandered off mentally.
+- **The first 30 seconds doesn't say what the thing is.** If a judge has to wait until minute 2 to learn what Citrus Squad is, they have already wandered off mentally.
 - **The wearer narrates instead of the pitch person.** The wearer's job is to walk and react. The pitch person's job is to talk.
 - **The demo includes a fragile beat that has flaked even once in rehearsal.** Cut it. Demo what works.
 - **The pitch person stops watching the wearer.** The wearer is the demo. The pitch person's eyes should follow them.

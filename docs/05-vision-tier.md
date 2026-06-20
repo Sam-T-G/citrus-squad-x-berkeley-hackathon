@@ -1,92 +1,57 @@
-# 05 — Vision tier (Coral)
+# 05 — Safety tier (phone perception)
 
-The vision tier is **conditional**. It ships only if Coral bring-up reaches green by Saturday H+12. If it does not, the tier cuts, the pitch reframes around direction-only with a disclosed sensing gap, and the team rejoins Tier-2.
-
-This doc covers what it does, how it fits, and how to know whether to cut it.
+The safety tier is what the belt fires when something is in the wearer's way, separate from the turn-by-turn direction cues. It now runs on the phone's own LiDAR and camera, not on a separate vision board. The full design, including the false-positive discipline, the arbitration against direction cues, and the demo hardening, lives in [`12-perception-and-safety-design.md`](12-perception-and-safety-design.md). This doc is the short version plus the optional Coral stretch that an earlier plan built around.
 
 ## What it adds
 
-Semantic obstacle detection on the belt. Camera sees a person walking into the wearer's path, Coral runs MobileNet-SSD over its Edge TPU, and if the criteria fire, it sends a single LC2 packet to the ESP32 that fires a sustained tap-train on the affected quadrant.
+Two signals, both felt as the sustained tap-train pattern:
 
-Where the deferred ToF tier would have given raw distance, Coral gives category. "There's a person 2 meters ahead and getting closer," not just "there's something 2 meters ahead." This is a real differentiation for the pitch.
+- **Proximity, from LiDAR (base).** The iPhone 15 Pro Max LiDAR scanner reads scene depth. When something is close on a given side, the phone emits `0x40 obstacle-near` on that quadrant. This revives the obstacle reflex the old plan deferred for lack of a ToF sensor. The phone is the ToF sensor, and a far better one. LiDAR is active infrared, so it works in any venue lighting.
+- **Person-in-path, from the camera (stretch).** On-device Vision detects a person and the phone gates it with LiDAR distance, then emits `0x10 vision-danger`. Same feel as proximity, distinct code so logs and firmware can tell them apart.
 
-## Architecture
+Where a cane catches things at foot level, this catches upper-body and approaching obstacles. That is the differentiation for the pitch, and it needs no hardware on the belt.
 
-Coral is a standalone safety node. It does not fuse with the phone, it does not know about the route, and it does not drive servos directly. The ESP32 stays the actuator brain.
+## How it fits
+
+The phone is the single LC2 sender, so it arbitrates: a settled hazard preempts the staged turn cue for that heartbeat, then direction returns once the hazard clears. The belt firmware learns one new event, `0x40`, which reuses the existing sustained tap-train pattern, so the four-pattern cap in [`03-protocol.md`](03-protocol.md) holds. The ESP32 just renders whatever event the phone sends.
+
+The design details that make the cue trustworthy (three-band directional sampling, ground-plane rejection, settle and hysteresis and refractory filtering, distance-graded intensity, and the thermal degrade ladder) are all in [`12-perception-and-safety-design.md`](12-perception-and-safety-design.md). Build against that doc.
+
+## Cut behavior
+
+There is no hard cut gate on proximity, because it is a base layer with low cost and no cold-start risk. If the LiDAR misbehaves at the venue, the proximity cue goes quiet and the rest of the system keeps working, the same as any other sensor dropping.
+
+The camera person-in-path stretch does have a cut gate: if it is not firing cleanly on a walk-in test by the Saturday integration check, cut it. The LiDAR proximity cue fires on the same approach regardless of the camera, so the safety beat still lands as "obstacle detected." The camera only adds the word "person."
+
+---
+
+## Optional sponsor stretch: Coral Edge TPU
+
+An earlier plan put the vision tier on a Coral Dev Board. The phone path replaced it for the base, but the Coral is in hand and can run as a sponsor-angle stretch if someone has spare hands and wants the Google Edge TPU story. Nothing in the base demo depends on it. Everything below is preserved for that optional path.
+
+### What Coral would add
+
+Semantic detection on its own node: camera sees a person, Coral runs MobileNet-SSD over its Edge TPU, and on a trigger it sends an LC2 packet to the ESP32. Coral does not fuse with the phone, does not know the route, and does not drive servos. It would be a second LC2 sender, and the ESP32 deconfliction backstop (Tier-3 wins on the affected quadrant, direction holds the rest) is what mixes it with the phone stream.
 
 ```
 [Camera] -> [Coral, runs MobileNet-SSD] -> [Trigger filter] -> [LC2 packet to ESP32]
 ```
 
-Coral and the phone are independent senders that both target the same ESP32. The ESP32 deconflicts per the rule in [`03-protocol.md`](03-protocol.md) (Tier-3 wins on the affected quadrant; Tier-2 holds the rest).
-
-## Trigger filter
+### Trigger filter
 
 A vision-danger event fires when all four conditions hold:
 
-1. **Class match.** The model returns at least one detection with class `person`. (Initial set is just `person`; can expand to stairs, obstacles, etc. as a bonus.)
-2. **Box size.** Bounding box height exceeds the proximity threshold. Initial guess: 150 pixels on a 640-pixel-tall frame. Tunable during M2-M4.
-3. **Debounce.** The detection persists for ≥3 consecutive frames. Prevents single-frame false positives.
-4. **Rate limit.** No vision-danger event has fired in the last 1.5 seconds. Prevents tap-train spam.
+1. **Class match.** At least one detection with class `person`.
+2. **Box size.** Bounding box height exceeds the proximity threshold. Initial guess: 150 pixels on a 640-pixel-tall frame. Tunable.
+3. **Debounce.** The detection persists for at least 3 consecutive frames.
+4. **Rate limit.** No vision-danger event has fired in the last 1.5 seconds.
 
-All four must hold. Tune the box-size threshold on the bench against a person standing 1.5 m, 2 m, and 3 m away. Pick the threshold that fires reliably at 2 m and not at 3 m.
+Tune the box-size threshold on the bench against a person at 1.5 m, 2 m, and 3 m. Pick the threshold that fires reliably at 2 m and not at 3 m.
 
-## Quadrant mapping
+### Network and power for Coral
 
-The base layer ignores camera x-coordinate and treats every detection as centerline. Mask = `0x06` (Left + Right). The wearer feels tap-trains on both inner servos.
+If Coral ships, it talks to the ESP32 over UART (recommended: USB-to-UART, 115200 baud, deterministic, no router dependency). Coral pulls 2 to 3 A peak and runs from its own power supply, never the ESP32 power bank. It has a passive heatsink; the Edge TPU throttles under sustained load, so bench test 30 minutes of continuous inference before relying on it.
 
-A bonus enhancement maps the box center x-coordinate to one of the four quadrants by camera FOV. Defer until the base layer is green.
+### Coral cut gate
 
-## Network architecture
-
-Coral talks to the ESP32. Four viable options, ranked by hack-window feasibility:
-
-| Option | Approach | Pro | Con |
-|---|---|---|---|
-| **A. UART (recommended)** | USB-to-UART adapter on Coral, RX/TX on ESP32. 115200 baud. | Deterministic, no RF, no router dependency. | Coral and ESP32 must be physically adjacent. Cable management on the belt. |
-| **B. BLE** | Coral as BLE central, ESP32 hosts a GATT characteristic. | No infrastructure. Paired connection. | Two BLE stacks to bring up (Mendel + ESP-IDF). More effort than UART. |
-| **C. Wi-Fi UDP** | Coral joins the same Wi-Fi as the phone, sends UDP to the ESP32 alongside Tier-2 packets. | Reuses existing transport. | Router is the SPOF. Camera bandwidth could starve LC2 packets if Coral also streams frames to anything else (it should not). |
-| **D. ESP32-AP** | ESP32 hosts a Wi-Fi access point. Phone and Coral both join. | No external router. | Phone loses internet access, cannot reach Google Maps. Breaks Tier-2. |
-
-**Default: Option A (UART).** Lowest bring-up cost. Wire goes from Coral to ESP32 inside the belt; no RF involved. Confirm at the M0 Coral spike.
-
-## Cut gate
-
-If Coral has not emitted a valid LC2 packet that the ESP32 receives by Saturday **H+12** (about 11 PM Saturday), cut the Tier-3 layer. The owner rejoins Tier-2 or holds the demo lane. The pitch reframes to direction-only with a disclosed sensing gap.
-
-The H+12 gate exists because vision integration past that point eats into the polish window and risks a half-shipped feature that confuses the demo more than it helps.
-
-## Why the gate is real
-
-The team has zero current Edge TPU fluency. From a cold start, the bring-up estimate is 12-16 hours of Linux + TFLite + model + camera + filter work. Pre-event learning compresses this to integration + tuning only, but only if the pre-event work actually happened.
-
-If the Coral owner did not complete the Wednesday-Friday learning sprint (see [`08-team-roles.md`](08-team-roles.md)), the H+12 gate will fire by default and the cut is automatic.
-
-## Pre-event learning sprint
-
-Three evenings, sequenced so each builds on the last:
-
-### Wednesday
-- Identify the owner at the alignment meeting.
-- Owner reads the Coral getting-started guide. About 60-90 minutes.
-- Flash Mendel Linux to an SD card. Boot the Coral. SSH in. End-of-day checkpoint: shell on the Coral.
-
-### Thursday
-- Run the Coral hello-world inference example. Confirm Edge TPU is recognized and a pre-compiled MobileNet returns a label for a test image.
-- Attach the camera. Stream frames. Confirm inference sees the camera input.
-
-### Friday
-- Run MobileNet-SSD on live camera frames at >10 FPS.
-- Implement the trigger filter in Python.
-- Emit a packet to a placeholder receiver (a laptop running `nc -u -l`). Confirm packet shape matches [`03-protocol.md`](03-protocol.md).
-
-End-of-Friday checkpoint: Coral is sending valid LC2 packets when a person walks in front of the camera, observed on a laptop.
-
-If the Friday checkpoint does not land, Coral is at high risk of missing the H+12 gate. The team should plan for the cut.
-
-## Failure modes specific to Coral
-
-- **Thermal throttle.** Edge TPU throttles under sustained load. Mitigate with a passive heatsink (Coral has one in the box). Test 30 minutes of continuous inference on the bench.
-- **Camera frame drops.** USB webcams can drop frames if the kernel driver is unhappy. Use the Coral Camera if it works; fall back to a known-good USB webcam (Logitech C920 class).
-- **Model false positives at the demo venue.** Lighting, background motion, judge crowd density. Mitigate by tuning the box-size threshold on Saturday morning at the venue, not in the lab.
-- **Power draw.** Coral pulls 2-3 A peak; do not share the ESP32 power bank. Coral has its own power supply (USB-C, 5 V, 3 A).
+If Coral has not emitted a valid LC2 packet the ESP32 receives by Saturday H+12, the stretch is dropped and whoever was on it rejoins the base. The team has zero current Edge TPU fluency, so a cold-start bring-up is 12 to 16 hours. This is exactly why it is a stretch and not the base. The base safety story is already covered by the phone LiDAR.

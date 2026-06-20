@@ -8,7 +8,7 @@ Four people, four lanes. Lanes are sized so each person can ship their piece wit
 |---|---|---|
 | **Tier-2 phone-IMU + Maps** | Sam | The phone app. Heading service, calibration UX, Maps integration, LC2 sender. Owns M1-M5 in the timeline. |
 | **Belt firmware + servos + integration** | Cole | ESP32 firmware. Servo PWM driver. LC2 receiver and deconflicter. Bench-tests the four servo patterns. |
-| **Coral vision (conditional)** | Josh OR Angelo | Tier-3. Mendel boot, model inference, trigger filter, LC2 sender. Owns the pre-event learning sprint Wed-Fri. Hands off to the team after the H+12 gate. |
+| **Phone perception (LiDAR + camera safety)** | Josh OR Angelo | The safety tier inside the phone app. Harden `DepthService`, add three-band directional sampling and ground rejection, the false-positive filtering, and the safety-over-direction arbitration with Sam's route cue. Camera person-in-path is the stretch. Coral is an optional sponsor stretch only if time allows. Pre-event sprint Wed-Fri is getting comfortable with ARKit or AVFoundation depth and Vision on the demo phone, a much lighter lift than the old Coral Edge TPU bring-up. |
 | **Pitch + demo + safety** | The remaining of Josh / Angelo | Pitch script. Demo lane setup. Backup video. Operator role during demo (presses Calibrate, narrates). Becomes the public face Sunday. |
 
 Default owner assignments are confirmed at the alignment meeting. Anyone can move lanes if the team agrees, but only at gate boundaries (H+0, H+4, H+12, H+20). Mid-block lane switches are how features get half-shipped.
@@ -27,15 +27,14 @@ Owners: Sam + Cole. By M0 (H+2), both must agree on:
 
 Anything ambiguous in the protocol doc gets resolved here. If the two lanes have different implementations of the same byte, the demo dies.
 
-### LC2 packet contract (Coral ↔ belt)
+### Obstacle event contract (phone ↔ belt)
 
-Owners: Coral owner + Cole. By M0 (H+2), both must agree on:
+Owners: perception owner + Cole. The safety cue is phone-emitted now, so it rides the same phone-belt link. By the time the safety tier wires up, both must agree on:
 
-- Same byte layout as the phone-belt contract.
-- Same IP/port or same UART pinout (Coral can share the ESP32 UART pins if BLE/UDP options are rejected).
-- The deconfliction rule: Tier-3 wins on the affected quadrant.
+- The `0x40 obstacle-near` event reuses the sustained tap-train pattern, so Cole's firmware adds one event code, no new pattern.
+- The phone arbitrates safety over direction and sends one packet per heartbeat, so the firmware never has to mix two phone events. The ESP32 deconfliction stays only as a backstop for the optional Coral stretch.
 
-This contract follows the same shape as the phone-belt contract, so the agreement is mechanical once Cole's firmware exists.
+If the optional Coral stretch ships, it becomes a second LC2 sender and reuses `0x10 vision-danger` with the same byte layout, at which point the ESP32 backstop deconfliction (vision wins on the affected quadrant) comes into play.
 
 ### Calibration trigger (phone ↔ belt)
 
@@ -73,7 +72,7 @@ The handoff note lives in a pinned chat message or in a `HANDOFF.md` at the repo
 
 ## When lanes merge
 
-Past M5 (H+12), lanes start merging. The pitch person + Tier-2 owner walk the demo lane together. The belt owner watches the servos fire and tunes intensity. The Coral owner (if vision shipped) tests trigger threshold on the demo wearer.
+Past M5 (H+12), lanes start merging. The pitch person + Tier-2 owner walk the demo lane together. The belt owner watches the servos fire and tunes intensity. The perception owner tests the obstacle threshold and the approach choreography on the demo wearer.
 
 By H+20, the team is one lane: demo polish and pitch rehearsal. Treat the last 4 hours of build as "rehearse what works" not "build more."
 

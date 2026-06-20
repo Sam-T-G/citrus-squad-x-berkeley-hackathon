@@ -1,5 +1,7 @@
 # 02 — Hardware
 
+The belt carries the actuators and the radio. The phone does all the sensing, including the LiDAR proximity and camera safety tiers, so nothing new mounts on the belt for those. See [`12-perception-and-safety-design.md`](12-perception-and-safety-design.md).
+
 ## Bill of materials
 
 | Qty | Part | Notes |
@@ -8,8 +10,8 @@
 | 2 | Spare servos | Per the "two of every SPOF part" rule. |
 | 1 | ESP32 NodeMCU dev board | 30-pin or 38-pin variant. 3.3 V logic, built-in Wi-Fi. |
 | 1 | Spare ESP32 | SPOF redundancy. |
-| 1 | Coral Dev Board (Google I/O Edition) | Tier-3 vision. Already in hand. No spare available. |
-| 1 | Coral Camera or USB webcam | Whichever has working drivers under Mendel Linux. |
+| 1 | Coral Dev Board (Google I/O Edition) | Optional, sponsor stretch only. In hand, no spare. The base safety tier does not use it. |
+| 1 | Coral Camera or USB webcam | Optional, only if the Coral stretch ships. |
 | 1 | Chest harness (sturdy running mount for the phone) | ~$25. Phone faces forward, rigid retention. |
 | 1 | Momentary push-button | Calibration trigger if the belt-side button option ships. ~$2. |
 | 1 | SPST slide switch | Power switch for the belt electronics. ~$2. |
@@ -76,7 +78,7 @@ The hardware-discipline rule is "two of every SPOF part" for everything that, if
 - 2 ESP32 boards (we have one in active, one boxed and ready)
 - 6 servos (4 in active, 2 spare)
 - 2 power banks
-- 1 Coral Dev Board (we only have one; if it dies, Tier-3 is cut)
+- 1 Coral Dev Board (optional stretch; we only have one, and if it dies the stretch is cut with no effect on the base demo)
 
 Pre-charge both spare power banks Friday night.
 
