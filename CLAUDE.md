@@ -21,7 +21,14 @@ Not yet picked. Team aligns on one of:
 - **Expo** (React Native + TypeScript)
 - **Native iOS** (Swift + SwiftUI)
 
-Native Android is out because the demo phone is an iPhone. Wait for the stack decision before scaffolding.
+Native Android is out because the demo phone is an iPhone. Wait for the stack decision before scaffolding actual code.
+
+The iOS-native track is pre-planned so the team can move fast if it picks Swift. Two reference docs, no code committed yet:
+
+- [`IOS-APP-PLAN.md`](IOS-APP-PLAN.md) — the WAND phone-side app architecture.
+- [`SWIFT.md`](SWIFT.md) — how Claude writes Swift in this repo. Read before writing any Swift.
+
+These apply only if the team confirms Swift. If it picks Expo, both go dormant and we follow `CONTRIBUTING.md`.
 
 ## Voice rules
 
