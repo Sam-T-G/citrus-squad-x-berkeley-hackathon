@@ -13,3 +13,8 @@ DEVELOPMENT_TEAM =
 // Your app's bundle id. Make it unique to you so it does not clash with a teammate's signing.
 // Convention: com.<yourname>.CitrusSquad
 APP_BUNDLE_ID = com.example.CitrusSquad
+
+// GitHub personal access token with `repo` write scope.
+// Generate at github.com → Settings → Developer settings → Personal access tokens → Tokens (classic).
+// Leave blank to disable auto-upload; logs still save locally in Documents/CVLogs/.
+GITHUB_TOKEN =

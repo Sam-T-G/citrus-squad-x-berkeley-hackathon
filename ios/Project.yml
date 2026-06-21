@@ -34,6 +34,7 @@ targets:
         NSCameraUsageDescription: CitrusSquad uses the LiDAR depth camera to sense nearby obstacles.
         UIFileSharingEnabled: YES
         LSSupportsOpeningDocumentsInPlace: YES
+        CVGitHubToken: $(GITHUB_TOKEN)
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: $(APP_BUNDLE_ID)

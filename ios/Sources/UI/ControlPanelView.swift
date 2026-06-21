@@ -254,26 +254,10 @@ struct ControlPanelView: View {
                 get: { model.objectDetection.isEnabled },
                 set: { model.objectDetection.isEnabled = $0 }
             ))
-            DisclosureGroup("Log to GitHub") {
-                SecureField("GitHub token (repo write scope)", text: Binding(
-                    get: { model.objectDetection.githubToken },
-                    set: { model.objectDetection.githubToken = $0 }
-                ))
-                .textFieldStyle(.roundedBorder)
-                .autocorrectionDisabled()
-                .textInputAutocapitalization(.never)
-                Text("Stop logging auto-commits to logs/cv/ on cole/computer-vision.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
             HStack {
                 if model.objectDetection.isLogging {
-                    Button("Stop log") { model.objectDetection.stopLogging() }
+                    Button("Flush log now") { model.objectDetection.rollLog() }
                         .buttonStyle(.bordered)
-                } else {
-                    Button("Start log") { model.objectDetection.startLogging() }
-                        .buttonStyle(.borderedProminent)
-                        .disabled(!model.objectDetection.modelLoaded)
                 }
                 if let url = model.objectDetection.lastLogURL {
                     ShareLink(item: url) {
@@ -282,17 +266,12 @@ struct ControlPanelView: View {
                     .buttonStyle(.bordered)
                 }
             }
-            if model.objectDetection.isLogging {
-                Text("Recording — stop to export CSV")
-                    .font(.caption)
-                    .foregroundStyle(.orange)
-            }
             switch model.objectDetection.uploadStatus {
             case .idle: EmptyView()
             case .uploading:
                 Text("Uploading to GitHub…").font(.caption).foregroundStyle(.secondary)
             case .done:
-                Text("Uploaded to logs/cv/").font(.caption).foregroundStyle(.green)
+                Text("Uploaded to logs/cv/ (auto-rolls every 60 s)").font(.caption).foregroundStyle(.green)
             case .failed(let msg):
                 Text("Upload failed: \(msg)").font(.caption).foregroundStyle(.red)
             }

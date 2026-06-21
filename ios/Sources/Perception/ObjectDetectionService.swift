@@ -44,17 +44,15 @@ final class ObjectDetectionService {
     private(set) var uploadStatus: UploadStatus = .idle
     private(set) var lastError: String?
 
-    var githubToken: String {
-        get { UserDefaults.standard.string(forKey: "cv.githubToken") ?? "" }
-        set { UserDefaults.standard.set(newValue, forKey: "cv.githubToken") }
-    }
-
     enum UploadStatus: Equatable {
         case idle
         case uploading
         case done(url: String)
         case failed(String)
     }
+
+    // Auto-flush every 300 detection frames (~60 s at 5 Hz).
+    private static let autoFlushFrames = 300
 
     // All properties below are accessed only on ARKit's serial callback queue.
     // Same isolation pattern as DepthService.frameTick.
@@ -100,12 +98,11 @@ final class ObjectDetectionService {
         isLogging = false
         lastLogURL = url
         guard let url else { return }
-        let token = githubToken
-        guard !token.isEmpty else { return }
+        guard !GitHubLogUploader.bundleToken.isEmpty else { return }
         uploadStatus = .uploading
         Task {
             do {
-                let htmlURL = try await GitHubLogUploader.upload(fileURL: url, token: token)
+                let htmlURL = try await GitHubLogUploader.upload(fileURL: url)
                 uploadStatus = .done(url: htmlURL)
                 log.info("CV log uploaded: \(htmlURL, privacy: .public)")
             } catch {
@@ -113,6 +110,12 @@ final class ObjectDetectionService {
                 log.error("CV log upload failed: \(error.localizedDescription, privacy: .public)")
             }
         }
+    }
+
+    /// Stop the current log, upload it, and immediately start the next one.
+    func rollLog() {
+        stopLogging()
+        startLogging()
     }
 
     // MARK: - Model loading
@@ -132,6 +135,7 @@ final class ObjectDetectionService {
             detector = model
             modelLoaded = true
             log.info("YOLOv8n loaded from \(url.lastPathComponent, privacy: .public)")
+            startLogging()
         } catch {
             lastError = "model load failed: \(error.localizedDescription)"
             log.error("CoreML load error: \(error.localizedDescription, privacy: .public)")
@@ -151,6 +155,11 @@ final class ObjectDetectionService {
         motionFrameIdx &+= 1
         let tracked = tracker.update(detections: detections, frameIndex: motionFrameIdx)
         cvLogger.log(frameIndex: motionFrameIdx, tracked: tracked, bands: bands)
+
+        // Auto-roll: flush and restart the log every autoFlushFrames (~60 s).
+        if motionFrameIdx % Self.autoFlushFrames == 0 {
+            Task { @MainActor [weak self] in self?.rollLog() }
+        }
 
         let hazard = Self.fuseTracked(tracked, bands: bands)
         let settled = advance(hazard: hazard)

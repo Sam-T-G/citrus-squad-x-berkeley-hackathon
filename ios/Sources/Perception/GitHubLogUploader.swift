@@ -26,9 +26,14 @@ enum GitHubLogUploader {
         }
     }
 
+    /// Token injected from Local.xcconfig via Info.plist (CVGitHubToken key). Never committed.
+    static var bundleToken: String {
+        Bundle.main.infoDictionary?["CVGitHubToken"] as? String ?? ""
+    }
+
     /// Upload `fileURL` to `logs/cv/<filename>` on `cole/computer-vision`.
     /// Returns the HTML URL of the committed file on success.
-    static func upload(fileURL: URL, token: String) async throws -> String {
+    static func upload(fileURL: URL, token: String = bundleToken) async throws -> String {
         guard !token.isEmpty else { throw UploadError.emptyToken }
 
         guard let data = try? Data(contentsOf: fileURL) else { throw UploadError.readFailed }
