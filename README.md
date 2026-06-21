@@ -33,21 +33,28 @@ The CV layer adds object awareness on top of the LiDAR obstacle detection alread
 
 All inference runs on the phone. No Wi-Fi dependency, no laptop at demo time.
 
-- **`ios/Sources/Perception/ObjectDetectionService.swift`** — hooks into `DepthService.onFrame` (10 Hz). Runs `VNCoreMLRequest` on the ARKit camera frame at 5 Hz, fuses each detected bounding box with the LiDAR band depth at that horizontal position, applies a settle filter (3 consecutive frames before firing) and a refractory period (~1 s after clearing), then calls `VisionHazardSource.report()` to feed the existing tick loop. No changes to the belt protocol or arbitration logic.
+- **`ios/Sources/Perception/ObjectDetectionService.swift`** — hooks into `DepthService.onFrame` (10 Hz). Runs `VNCoreMLRequest` on the ARKit camera frame at 5 Hz, fuses each detected bounding box with the LiDAR band depth at that horizontal position, runs motion tracking, applies a settle filter (3 consecutive frames before firing) and a refractory period (~1 s after clearing), then calls `VisionHazardSource.report()` to feed the existing tick loop. Exposes `movingObjects: [TrackedObject]` on the main actor as the Claude identification hook.
 - To activate: export the model and drag it into Xcode. One command: `python3 -c "from ultralytics import YOLO; YOLO('yolov8n.pt').export(format='coreml', nms=True)"`, then drag `yolov8n.mlpackage` into the Xcode project Sources group and check "Add to target: CitrusSquad." Until then the service starts but `modelLoaded` stays false and no detections fire.
+
+### Motion tracking layer (built)
+
+Parameter-based cross-frame object tracking. No AI. Explicit thresholds in one file, fully testable.
+
+- **`ios/Sources/Perception/MotionParameters.swift`** — defines `MotionState` (`unknown / stationary / moving / approaching / receding`), `TrackedObject`, and all classification thresholds (`approachThresholdMetersPerSecond`, `lateralThresholdNormPerSecond`, `settleFrames`, etc.). Tune values here against real footage; no code changes needed elsewhere.
+- **`ios/Sources/Perception/MotionTracker.swift`** — tracks YOLO detections across frames by label + horizontal proximity. Maintains per-object depth and position history, computes approach velocity and lateral rate, and applies a settle filter before confirming `MotionState`. Stationary objects are never elevated — LiDAR handles those. Approaching objects are the only ones passed to Claude.
 
 ### Collision prediction and action layer (built)
 
 Pure-logic layer on top of raw detections. No sensors, fully unit-testable.
 
-- **`ios/Sources/Perception/CollisionPredictor.swift`** — for each detection, asks: is this object in my path, how close, and what is the best move?
+- **`ios/Sources/Perception/CollisionPredictor.swift`** — for each detection, asks: is this object in my path, how close, and what is the best move? Motion-aware overload `assess(tracked:bands:)` promotes approaching objects one threat tier and suppresses stationary CV detections beyond warning range.
 
 ```
-Input:  [CVDetection] + LiDAR BandDepths
+Input:  [TrackedObject] + LiDAR BandDepths
 Output: ObstacleThreat (label, distance, ThreatLevel, NavigationAction)
 ```
 
-`ThreatLevel`: `advisory` (3–5 m), `warning` (1.5–3 m), `urgent` (< 1.5 m). `NavigationAction`: `stepLeft(paces:)`, `stepRight(paces:)`, `stop`, `slowDown`, `clear`. Checks which LiDAR band has clear space to decide which way to dodge. Belt fires the directional tap; Josh's audio layer can speak "pole ahead, step left 2 paces."
+`ThreatLevel`: `advisory` (3–5 m), `warning` (1.5–3 m), `urgent` (< 1.5 m). `NavigationAction`: `stepLeft(paces:)`, `stepRight(paces:)`, `stop`, `slowDown`, `clear`. Checks which LiDAR band has clear space to decide which way to dodge. Belt fires the directional tap; Josh's audio layer can speak "person ahead, step left 2 paces."
 
 ### Running the Python CV server
 

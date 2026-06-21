@@ -228,8 +228,10 @@ All 17 tests pass. YOLO is mocked so no model download is needed to run tests.
 | `cv/webcam_test.py` | Done | Local smoke test against laptop webcam |
 | `server.py` | Done | Uvicorn entry point |
 | `tests/` | Done | 17 unit tests, all passing |
-| `ios/Sources/Perception/ObjectDetectionService.swift` | Done (needs model) | CoreML inference + LiDAR fusion, settle/refractory, reports via `VisionHazardSource` |
-| `ios/Sources/Perception/CollisionPredictor.swift` | Done | Pure threat/action logic for audio layer; `ThreatLevel`, `NavigationAction`, `ObstacleThreat`, `CVDetection` types |
+| `ios/Sources/Perception/ObjectDetectionService.swift` | Done (needs model) | CoreML inference + LiDAR fusion + motion tracking, settle/refractory, reports via `VisionHazardSource`. Exposes `movingObjects: [TrackedObject]` for Claude hook. |
+| `ios/Sources/Perception/CollisionPredictor.swift` | Done | Pure threat/action logic; motion-aware `assess(tracked:bands:)` overload prioritizes approaching objects |
+| `ios/Sources/Perception/MotionParameters.swift` | Done | `MotionState` + `TrackedObject` types; all classification thresholds in one place |
+| `ios/Sources/Perception/MotionTracker.swift` | Done | Cross-frame object tracker; computes approach velocity + lateral rate; settle filter before confirming `MotionState` |
 
 ## On-device CoreML path (built — pending model file)
 
@@ -258,6 +260,29 @@ python3 -c "from ultralytics import YOLO; YOLO('yolov8n.pt').export(format='core
 Drag `yolov8n.mlpackage` into the Xcode project Sources group and check "Add to target: CitrusSquad." The `nms=True` flag is required — without it the model outputs raw tensors instead of `VNRecognizedObjectObservation` and nothing will be detected.
 
 Until the model is bundled, `objectDetection.modelLoaded` stays `false` and the service is silent (safe failure).
+
+## Motion tracking layer (built)
+
+`MotionParameters.swift` + `MotionTracker.swift` — parameter-based cross-frame tracking, no AI.
+
+**Philosophy:** same approach as the Mira project. Explicit named thresholds in `MotionParameters`, no model, fully testable by feeding synthetic frame sequences. Claude fires only when `motionState == .approaching`; stationary objects never touch Claude.
+
+**How it works:**
+
+Each pipeline frame, `ObjectDetectionService` passes the `[CVDetection]` array to `MotionTracker.update(detections:frameIndex:)`. The tracker:
+
+1. Matches each detection to an existing track by label + horizontal proximity (within `matchRadiusNorm = 0.15`)
+2. Appends depth and horizontal position to per-object ring buffers (6 frames deep)
+3. Computes approach rate `(oldest_depth - newest_depth) / elapsed` and lateral rate
+4. Classifies: approaching if rate ≥ 0.15 m/s, moving if lateral rate ≥ 0.04 norm/s, else stationary
+5. Applies a settle filter (3 consecutive matching frames before confirming)
+6. Expires tracks not seen for 8 frames
+
+Returns `[TrackedObject]` with `motionState`, `approachRateMetersPerSecond`, and `lateralRateNormPerSecond` per object.
+
+**Tuning:** all thresholds are in `MotionParameters.swift` with named constants. Change a value, rebuild, test. No model retraining.
+
+**Claude hook:** `ObjectDetectionService.movingObjects: [TrackedObject]` is exposed on the `@MainActor` and contains only `approaching` and `moving` objects. Wire Claude identification here when ready — stationary objects are excluded by design.
 
 ## Collision prediction and action layer (built)
 
@@ -309,11 +334,13 @@ Audio can say: "pole ahead, step left 1 pace"
 ## Open items
 
 - [x] Implement `ObjectDetectionService.swift` (CoreML + ARKit frame subscription via `DepthService.onFrame`)
-- [x] Implement `CollisionPredictor.swift` — pure threat/action logic; `ThreatLevel`, `NavigationAction`, `ObstacleThreat`, `CVDetection` types; `CollisionPredictor` enum
+- [x] Implement `CollisionPredictor.swift` — pure threat/action logic; motion-aware `assess(tracked:bands:)` overload
+- [x] Implement `MotionParameters.swift` — parameter library for motion classification
+- [x] Implement `MotionTracker.swift` — cross-frame object tracker, approach velocity, settle filter
 - [x] Wire `ObjectDetectionService` into `AppModel` (`objectDetection.start(depthService:hazard:)` in `init`)
-- [ ] Export `yolov8n.mlpackage` and add to Xcode target (one-time step: `python3 -c "from ultralytics import YOLO; YOLO('yolov8n.pt').export(format='coreml')"`, drag `yolov8n.mlpackage` into Sources group, check "Add to target")
-- [ ] Confirm ARKit depth map x-axis = left/right in portrait mount. One bench test: walk toward something on the left, verify depth.left drops and belt fires left. See `DepthService.bandedNearest` split on `x` vs `width`.
-- [ ] Tune `cvConfidenceThreshold` on real footage (currently 0.35 in `CitrusSquadConfig`)
-- [ ] Confirm `VNRecognizedObjectObservation` output from the CoreML model — requires NMS export. If objects aren't detected, re-export: `YOLO('yolov8n.pt').export(format='coreml', nms=True)`
+- [ ] Export `yolov8n.mlpackage` and add to Xcode target (one-time: `python3 -c "from ultralytics import YOLO; YOLO('yolov8n.pt').export(format='coreml', nms=True)"`, drag into Sources group, check "Add to target")
+- [ ] Confirm ARKit depth map x-axis = left/right in portrait mount. Walk toward something on the left, verify `depth.left` drops and belt fires left.
+- [ ] Tune `MotionParameters` thresholds on real footage — `approachThresholdMetersPerSecond` and `matchRadiusNorm` are the most likely to need adjustment
+- [ ] Wire Claude identification for `movingObjects` — hook is `objectDetection.movingObjects: [TrackedObject]` on the main actor; only approaching + moving objects are included
+- [ ] Confirm `VNRecognizedObjectObservation` output from the CoreML model — requires NMS export. If nothing is detected, re-export with `nms=True`
 - [ ] Confirm wire format between Python server and iOS sender if Wi-Fi path is kept as fallback
-- [ ] Add keep-alive / ping-pong to the `/haptics` WebSocket if the controller idles
