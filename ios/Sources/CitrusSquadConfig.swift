@@ -53,4 +53,22 @@ enum CitrusSquadConfig {
     static let cvUrgentMeters = 1.5
     static let cvWarningMeters = 3.0
     static let cvAdvisoryMeters = 5.0
+
+    // Vision model selection (ios/YOLO-WORLD-PLAN.md + ios/PERCEPTION-AVOIDANCE-HANDOFF.md)
+    /// Primary CoreML model resource name. Points at the YOLO-World export with the navigation vocabulary.
+    static let visionModelName = "yolov8s-worldv2"
+    /// Fallback model name when the primary is not in the bundle (vanilla YOLOv8n, COCO-80 classes).
+    static let visionFallbackModelName = "yolov8n"
+    /// 1-in-N throttle applied to DepthService's ~10 Hz ARKit feed.
+    /// World model (4x heavier than v8n) runs at 3 (~3.3 Hz). Flip to 2 (~5 Hz) when on v8n.
+    static let visionThrottleDivisor = 3
+    /// Navigation vocabulary. Must match set_classes() in the YOLO-World CoreML export exactly —
+    /// class-name strings are learned text embeddings, so "trash can" and "trashcan" differ.
+    /// Numbered-slot labels ("20"–"79") that the 80-wide output tensor pads with are filtered out
+    /// by the Swift contains() check in runDetection.
+    static let visionNavigationClasses: Set<String> = [
+        "person", "bicycle", "car", "motorcycle", "bus", "truck", "dog", "cat",
+        "pole", "bollard", "trash can", "garbage bin", "parking meter", "street light",
+        "fire hydrant", "traffic cone", "construction barrier", "bench", "stop sign", "traffic light",
+    ]
 }

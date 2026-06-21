@@ -4,15 +4,7 @@ import ARKit
 import Observation
 import os
 
-/// Navigation-relevant COCO classes. Matches NAVIGATION_CLASSES in cv/detection.py.
-private let navigationClasses: Set<String> = [
-    "person", "bicycle", "car", "motorcycle", "bus", "truck",
-    "chair", "couch", "dining table", "bed",
-    "stop sign", "traffic light", "fire hydrant",
-    "bench", "potted plant", "dog", "cat", "backpack", "suitcase", "umbrella",
-]
-
-/// On-device YOLOv8n inference fused with ARKit LiDAR depth.
+/// On-device YOLO-World inference fused with ARKit LiDAR depth.
 ///
 /// Hooks into DepthService's ARKit session via the `onFrame` callback, runs a
 /// `VNCoreMLRequest` on each captured image, and reports to `VisionHazardSource`
@@ -23,9 +15,9 @@ private let navigationClasses: Set<String> = [
 /// The non-Sendable `VNCoreMLModel` and frame counters stay on the callback queue
 /// via `nonisolated(unsafe)` storage, matching the pattern in `DepthService`.
 ///
-/// Requires `yolov8n.mlpackage` in the Xcode target:
-///   `python3 -c "from ultralytics import YOLO; YOLO('yolov8n.pt').export(format='coreml')"`
-/// then drag `yolov8n.mlpackage` into the Xcode project Sources group and add it to the target.
+/// Requires `yolov8s-worldv2.mlpackage` (or `yolov8n.mlpackage` as fallback) in the Xcode target.
+/// See ios/YOLO-WORLD-PLAN.md for the export recipe. `CitrusSquadConfig.visionModelName` controls
+/// which loads; `visionFallbackModelName` is tried if the primary is not bundled.
 @MainActor
 @Observable
 final class ObjectDetectionService {
@@ -74,9 +66,13 @@ final class ObjectDetectionService {
     // MARK: - Model loading
 
     private func loadModel() async {
-        guard let url = Bundle.main.url(forResource: "yolov8n", withExtension: "mlmodelc")
-            ?? Bundle.main.url(forResource: "yolov8n", withExtension: "mlpackage") else {
-            lastError = "yolov8n not in bundle — export then add yolov8n.mlpackage to the Xcode target"
+        let primary = CitrusSquadConfig.visionModelName
+        let fallback = CitrusSquadConfig.visionFallbackModelName
+        guard let url = Bundle.main.url(forResource: primary, withExtension: "mlmodelc")
+            ?? Bundle.main.url(forResource: primary, withExtension: "mlpackage")
+            ?? Bundle.main.url(forResource: fallback, withExtension: "mlmodelc")
+            ?? Bundle.main.url(forResource: fallback, withExtension: "mlpackage") else {
+            lastError = "\(primary) and \(fallback) not in bundle — add .mlpackage to the Xcode target"
             log.warning("CoreML model not found; object detection disabled until model is added")
             return
         }
@@ -87,7 +83,7 @@ final class ObjectDetectionService {
             let model = try VNCoreMLModel(for: ml)
             detector = model
             modelLoaded = true
-            log.info("YOLOv8n loaded from \(url.lastPathComponent, privacy: .public)")
+            log.info("CoreML model loaded: \(url.lastPathComponent, privacy: .public)")
         } catch {
             lastError = "model load failed: \(error.localizedDescription)"
             log.error("CoreML load error: \(error.localizedDescription, privacy: .public)")
@@ -99,9 +95,9 @@ final class ObjectDetectionService {
     nonisolated func processFrame(image: CVPixelBuffer, bands: BandDepths) {
         guard enabledMirror, let det = detector else { return }
 
-        // Throttle to ~5 Hz (DepthService feeds at ~10 Hz).
+        // Throttle: world model runs at ~3.3 Hz, v8n fallback at ~5 Hz (set in CitrusSquadConfig).
         callTick &+= 1
-        guard callTick % 2 == 0 else { return }
+        guard callTick % CitrusSquadConfig.visionThrottleDivisor == 0 else { return }
 
         let detections = Self.runDetection(model: det, in: image)
         motionFrameIdx &+= 1
@@ -149,10 +145,10 @@ final class ObjectDetectionService {
 
     /// Run VNCoreMLRequest on the captured image. Returns navigation-class detections only.
     ///
-    /// The YOLOv8n CoreML export must include NMS and Vision metadata so results come back
-    /// as `[VNRecognizedObjectObservation]`. If the model outputs a raw feature value instead,
-    /// the cast produces an empty array and the service reports nothing (safe failure).
-    /// Re-export with `nms=True` if detections are missing: `YOLO('yolov8n.pt').export(format='coreml', nms=True)`.
+    /// The CoreML export must be a pipeline (nms=True at export time) so Vision returns
+    /// `[VNRecognizedObjectObservation]`. Raw-tensor exports produce a VNCoreMLFeatureValueObservation
+    /// instead — the cast produces an empty array and the service reports nothing (safe failure).
+    /// Re-export with nms=True if detections are missing.
     nonisolated static func runDetection(model: VNCoreMLModel, in image: CVPixelBuffer) -> [CVDetection] {
         let request = VNCoreMLRequest(model: model)
         request.imageCropAndScaleOption = .scaleFill
@@ -167,7 +163,7 @@ final class ObjectDetectionService {
         var results: [CVDetection] = []
         for obs in request.results as? [VNRecognizedObjectObservation] ?? [] {
             guard let top = obs.labels.first else { continue }
-            guard navigationClasses.contains(top.identifier) else { continue }
+            guard CitrusSquadConfig.visionNavigationClasses.contains(top.identifier) else { continue }
             guard top.confidence >= CitrusSquadConfig.cvConfidenceThreshold else { continue }
             results.append(CVDetection(
                 label: top.identifier,

@@ -1,0 +1,19 @@
+Model files go here. They are gitignored (*.mlpackage, *.mlmodelc) — regenerate locally.
+
+  YOLO-World (primary):
+    python3.11 -c "
+    import ssl; ssl._create_default_https_context = ssl._create_unverified_context
+    from ultralytics import YOLOWorld
+    model = YOLOWorld('yolov8s-worldv2.pt')
+    model.set_classes(['person','bicycle','car','motorcycle','bus','truck','dog','cat',
+      'pole','bollard','trash can','garbage bin','parking meter','street light',
+      'fire hydrant','traffic cone','construction barrier','bench','stop sign','traffic light'])
+    model.export(format='coreml', nms=True)
+    "
+    mv yolov8s-worldv2.mlpackage ios/Sources/Resources/
+
+  YOLOv8n (fallback):
+    python3.11 -c "from ultralytics import YOLO; YOLO('yolov8n.pt').export(format='coreml', nms=True)"
+    mv yolov8n.mlpackage ios/Sources/Resources/
+
+After adding models, run: cd ios && xcodegen generate
