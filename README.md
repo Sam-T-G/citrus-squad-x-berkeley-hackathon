@@ -84,7 +84,7 @@ iPhone (Citrus Squad app)                         ESP32 (belt)
 
 ## Team
 
-Sam (iOS, LiDAR, ESP32, CoreML iOS integration), Cole (computer vision, Python pipeline, collision prediction), Josh (audio), Angelo.
+Sam (iOS, LiDAR, CoreML iOS integration), Cole (computer vision, Python pipeline, collision prediction), Josh (audio), Gelo (hardware: belt construction, phone harness, ESP32 wiring and firmware).
 
 ## License
 
