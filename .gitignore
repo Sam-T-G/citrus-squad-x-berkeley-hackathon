@@ -29,6 +29,11 @@ yarn-debug.log*
 yarn-error.log*
 .pnpm-debug.log*
 
+# ML model files (large binaries, regenerate locally)
+*.mlpackage
+*.mlmodelc
+*.pt
+
 # Env / secrets
 .env
 .env.local
