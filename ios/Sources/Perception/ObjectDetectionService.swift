@@ -36,16 +36,21 @@ final class ObjectDetectionService {
     private(set) var modelLoaded = false
     private(set) var detectionCount = 0
     private(set) var currentThreat: ObstacleThreat?
+    /// Objects currently classified as approaching or moving — ready for Claude identification.
+    /// Stationary objects are omitted: LiDAR + Sam's param layer handles those.
+    private(set) var movingObjects: [TrackedObject] = []
     private(set) var lastError: String?
 
     // All properties below are accessed only on ARKit's serial callback queue.
     // Same isolation pattern as DepthService.frameTick.
     @ObservationIgnored nonisolated(unsafe) private var detector: VNCoreMLModel?
     @ObservationIgnored nonisolated(unsafe) private var callTick = 0
+    @ObservationIgnored nonisolated(unsafe) private var motionFrameIdx = 0
     @ObservationIgnored nonisolated(unsafe) private var settleCount = 0
     @ObservationIgnored nonisolated(unsafe) private var refractoryTicks = 0
     @ObservationIgnored nonisolated(unsafe) private var enabledMirror = true
     @ObservationIgnored nonisolated(unsafe) private weak var hazardSink: VisionHazardSource?
+    @ObservationIgnored nonisolated(unsafe) private var tracker = MotionTracker()
 
     private let log = Logger(subsystem: "com.samuelgerungan.CitrusSquad", category: "cv")
 
@@ -99,15 +104,20 @@ final class ObjectDetectionService {
         guard callTick % 2 == 0 else { return }
 
         let detections = Self.runDetection(model: det, in: image)
-        let hazard = Self.fuse(detections: detections, bands: bands)
+        motionFrameIdx &+= 1
+        let tracked = tracker.update(detections: detections, frameIndex: motionFrameIdx)
+
+        let hazard = Self.fuseTracked(tracked, bands: bands)
         let settled = advance(hazard: hazard)
-        let threat = CollisionPredictor.assess(detections: detections, bands: bands)
+        let threat = CollisionPredictor.assess(tracked: tracked, bands: bands)
+        let moving = tracked.filter { $0.motionState == .approaching || $0.motionState == .moving }
 
         let source = hazardSink
         Task { @MainActor [weak self] in
             guard let self else { return }
             self.detectionCount += 1
             self.currentThreat = threat
+            self.movingObjects = moving
             if let h = settled {
                 source?.report(kind: h.kind, side: h.mask, distanceMeters: h.distanceMeters)
             } else {
@@ -169,19 +179,38 @@ final class ObjectDetectionService {
         return results
     }
 
-    /// Fuse detections with LiDAR band depths and pick the nearest in-path obstacle as a Hazard.
-    nonisolated static func fuse(detections: [CVDetection], bands: BandDepths) -> Hazard? {
-        var best: (distance: Double, mask: QuadrantMask, kind: Hazard.Kind)?
+    /// Fuse tracked objects with LiDAR band depths and pick the most urgent in-path obstacle.
+    ///
+    /// Motion priority: approaching objects are elevated — they count against advisory range
+    /// even if stationary CV detections at the same distance wouldn't. Stationary objects
+    /// reported by CV are suppressed unless within warning range (LiDAR already owns those).
+    nonisolated static func fuseTracked(_ tracked: [TrackedObject], bands: BandDepths) -> Hazard? {
+        var best: (distance: Double, mask: QuadrantMask, kind: Hazard.Kind, priority: Int)?
 
-        for detection in detections {
-            let depth = CollisionPredictor.bandDepth(for: detection.horizontalNorm, bands: bands)
-            guard depth > 0, depth <= CitrusSquadConfig.cvAdvisoryMeters else { continue }
+        for obj in tracked {
+            let depth = obj.distanceMeters > 0
+                ? obj.distanceMeters
+                : CollisionPredictor.bandDepth(for: obj.horizontalNorm, bands: bands)
+            guard depth > 0 else { continue }
 
-            let mask = quadrantMask(for: detection.horizontalNorm, distance: depth)
-            let kind: Hazard.Kind = detection.label == "person" ? .person : .obstacle
+            let limit: Double
+            switch obj.motionState {
+            case .approaching: limit = CitrusSquadConfig.cvAdvisoryMeters
+            case .moving:      limit = CitrusSquadConfig.cvWarningMeters
+            default:           limit = CitrusSquadConfig.cvUrgentMeters
+            }
+            guard depth <= limit else { continue }
 
-            if best == nil || depth < best!.distance {
-                best = (depth, mask, kind)
+            let mask = quadrantMask(for: obj.horizontalNorm, distance: depth)
+            let kind: Hazard.Kind = obj.label == "person" ? .person : .obstacle
+            let priority = obj.motionState == .approaching ? 1 : 0
+
+            if let b = best {
+                if priority > b.priority || (priority == b.priority && depth < b.distance) {
+                    best = (depth, mask, kind, priority)
+                }
+            } else {
+                best = (depth, mask, kind, priority)
             }
         }
         guard let best else { return nil }

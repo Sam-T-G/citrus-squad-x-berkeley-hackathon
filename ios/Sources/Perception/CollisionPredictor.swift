@@ -38,6 +38,45 @@ struct CVDetection: Sendable {
 /// No sensors, no side effects. Every function here is covered by unit tests.
 enum CollisionPredictor {
 
+    /// Motion-aware version. Approaching objects are prioritized over stationary ones at the same
+    /// distance; stationary CV detections that are advisory-range-only are ignored (LiDAR owns those).
+    static func assess(tracked: [TrackedObject], bands: BandDepths) -> ObstacleThreat? {
+        guard !tracked.isEmpty else { return nil }
+
+        // Convert to CVDetection, fusing LiDAR depth where the tracker has no reading.
+        let fused: [(detection: CVDetection, isApproaching: Bool)] = tracked.compactMap { obj in
+            var d = CVDetection(label: obj.label, confidence: obj.confidence,
+                                horizontalNorm: obj.horizontalNorm, distanceMeters: obj.distanceMeters)
+            if d.distanceMeters < 0 {
+                d.distanceMeters = bandDepth(for: obj.horizontalNorm, bands: bands)
+            }
+            let dist = d.distanceMeters
+            // Suppress stationary CV detections beyond warning range — LiDAR handles those.
+            let isApproaching = obj.motionState == .approaching
+            let keep = dist > 0 && (isApproaching
+                ? dist < CitrusSquadConfig.cvAdvisoryMeters
+                : dist < CitrusSquadConfig.cvWarningMeters)
+            return keep ? (d, isApproaching) : nil
+        }
+        guard !fused.isEmpty else { return nil }
+
+        // Approaching beats non-approaching; within same priority pick nearest.
+        let best = fused.min { a, b in
+            if a.isApproaching != b.isApproaching { return a.isApproaching }
+            return effectiveDistance(a.detection) < effectiveDistance(b.detection)
+        }!
+        let distance = effectiveDistance(best.detection)
+        var level = threatLevel(for: distance)
+        // Boost approaching objects by one threat tier.
+        if best.isApproaching, level == .advisory { level = .warning }
+        let action = dodgeAction(for: best.detection, bands: bands)
+        return ObstacleThreat(label: best.detection.label,
+                              distanceMeters: distance,
+                              horizontalNorm: best.detection.horizontalNorm,
+                              level: level,
+                              action: action)
+    }
+
     static func assess(detections: [CVDetection], bands: BandDepths) -> ObstacleThreat? {
         guard !detections.isEmpty else { return nil }
 

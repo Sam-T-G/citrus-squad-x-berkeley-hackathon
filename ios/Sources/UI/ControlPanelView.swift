@@ -236,12 +236,19 @@ struct ControlPanelView: View {
         Card(title: "Object detection (CoreML)", status: cvStatus) {
             LabeledRow("Model", model.objectDetection.modelLoaded ? "loaded" : "not loaded")
             LabeledRow("Detections", "\(model.objectDetection.detectionCount)")
+            LabeledRow("Moving / approaching", "\(model.objectDetection.movingObjects.count)")
             if let threat = model.objectDetection.currentThreat {
                 LabeledRow("Nearest", "\(threat.label) \(String(format: "%.1f m", threat.distanceMeters))")
                 LabeledRow("Level", "\(threat.level)")
                 LabeledRow("Action", "\(threat.action)")
             } else {
                 LabeledRow("Nearest", "none")
+            }
+            if !model.objectDetection.movingObjects.isEmpty {
+                let labels = model.objectDetection.movingObjects.prefix(3)
+                    .map { "\($0.label) (\($0.motionState))" }
+                    .joined(separator: ", ")
+                Text(labels).font(.caption).foregroundStyle(.secondary)
             }
             Toggle("Enable object detection", isOn: Binding(
                 get: { model.objectDetection.isEnabled },
