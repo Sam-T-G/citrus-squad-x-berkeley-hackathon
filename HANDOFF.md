@@ -81,7 +81,7 @@ M5 green: the replay demo drives the belt, every turn cue fires on the correct s
 
 # CV Layer Handoff
 
-Last updated: 2026-06-20
+Last updated: 2026-06-20 (updated mid-hack)
 
 ## What this covers
 
@@ -331,6 +331,42 @@ Belt fires: centerMass tap
 Audio can say: "pole ahead, step left 1 pace"
 ```
 
+## Object identification gap
+
+**What YOLO can identify:** the 80 COCO classes — people, bikes, cars, chairs, benches, bags, animals, etc.
+
+**What YOLO cannot identify:** poles, bollards, trash cans, street lights, parking meters, fire hydrants (beyond the COCO one), construction barriers. These are the objects blind pedestrians most commonly walk into.
+
+**Why the parameter library doesn't fix this:** `MotionParameters` classifies motion, not object type. It tells you a detected object is approaching — it cannot tell you what that object is. And it only runs on top of what YOLO already found. If YOLO doesn't detect a pole, the parameter library never sees it.
+
+**What handles unidentified stationary objects today:** LiDAR. It fires the belt tap regardless of object type — it just can't produce a spoken label. The wearer knows something is close on a specific side but not what it is.
+
+**The gap for a blind user:** the audio label matters. "Pole on your left" is more useful than a tap with no context. Without identification, the belt tells you *where* but not *what*.
+
+## Claude Vision integration (planned for demo)
+
+**Decision:** use Claude Vision to identify stationary objects detected by LiDAR, and moving objects tracked by `MotionTracker`. The belt fires immediately from LiDAR distance (on-device, instant). Claude names the object afterward for the audio layer — fire and forget, never blocks the belt.
+
+**Approach rate and latency:** Haiku 4.5 with a small cropped image returns in ~300-500ms over Wi-Fi. By the time text-to-speech finishes speaking, the round trip is ~700ms. Acceptable for audio narration; unacceptable for belt timing (which is why Claude never touches belt logic).
+
+**Demo strategy — pre-cache scout mode:** for a blind user, network latency during the demo is a reliability risk. The planned approach is to walk the demo route beforehand with the app running, identify and cache every stationary object on the path via Claude, then during the actual demo speak all labels from cache instantly with zero network dependency.
+
+```
+Scout pass (before demo):
+  LiDAR fires → Claude Vision → "trash can" → cache at (band: center, dist: ~2.1m)
+
+Demo:
+  LiDAR fires → cache hit → audio says "trash can on your left" instantly
+```
+
+**What still needs building:**
+- `SceneCache.swift` — stores identified objects by horizontal band + approximate distance. Keyed loosely (±0.5m, same band) so small position variance still hits.
+- `ClaudeVisionIdentifier.swift` — crops `ARFrame.capturedImage` at the LiDAR band position, sends to Haiku 4.5, returns a plain-English label. Called once per new detection, result written to `SceneCache`.
+- Wire into `AppModel` tick loop: on new LiDAR hazard, check cache first, call Claude if miss.
+- Audio layer reads the label from the cache and speaks it.
+
+**Post-hackathon:** replace Claude Vision with an on-device CoreML model trained on Mapillary Vistas or Open Images V7 (600+ classes including street infrastructure). Same architecture, no network dependency, works everywhere.
+
 ## Open items
 
 - [x] Implement `ObjectDetectionService.swift` (CoreML + ARKit frame subscription via `DepthService.onFrame`)
@@ -339,8 +375,10 @@ Audio can say: "pole ahead, step left 1 pace"
 - [x] Implement `MotionTracker.swift` — cross-frame object tracker, approach velocity, settle filter
 - [x] Wire `ObjectDetectionService` into `AppModel` (`objectDetection.start(depthService:hazard:)` in `init`)
 - [ ] Export `yolov8n.mlpackage` and add to Xcode target (one-time: `python3 -c "from ultralytics import YOLO; YOLO('yolov8n.pt').export(format='coreml', nms=True)"`, drag into Sources group, check "Add to target")
+- [ ] Build `SceneCache.swift` — keyed object label cache by LiDAR band + approximate distance
+- [ ] Build `ClaudeVisionIdentifier.swift` — crops frame at hazard band, calls Haiku 4.5, writes to cache
+- [ ] Wire Claude identification into `AppModel` tick loop — cache check first, Claude call on miss
+- [ ] Scout the demo route with the app to pre-populate the cache before judging
 - [ ] Confirm ARKit depth map x-axis = left/right in portrait mount. Walk toward something on the left, verify `depth.left` drops and belt fires left.
 - [ ] Tune `MotionParameters` thresholds on real footage — `approachThresholdMetersPerSecond` and `matchRadiusNorm` are the most likely to need adjustment
-- [ ] Wire Claude identification for `movingObjects` — hook is `objectDetection.movingObjects: [TrackedObject]` on the main actor; only approaching + moving objects are included
 - [ ] Confirm `VNRecognizedObjectObservation` output from the CoreML model — requires NMS export. If nothing is detected, re-export with `nms=True`
-- [ ] Confirm wire format between Python server and iOS sender if Wi-Fi path is kept as fallback
