@@ -23,18 +23,21 @@ enum HapticState {
   TURN_LEFT, 
   TURN_RIGHT, 
   ROTATE_LEFT, 
-  ROTATE_RIGHT 
+  ROTATE_RIGHT,
+  U_TURN,          
+  LOW_BATTERY      
 };
 
 HapticState currentState = IDLE;
 
 unsigned long previousMillis = 0;
 unsigned long currentInterval = 0; 
-bool isPulseOn = false; // Tracks if the servo is currently extended (tapping) or retracted
+bool isPulseOn = false; 
 
-// Adjust these timings to change the "feel" of the tap
-// Note: The smooth sweep takes about 50ms, so we subtracted 50ms from the original timings
-// to keep the overall heartbeat feeling the same.
+// Tracks how many taps have occurred for finite patterns
+int tapCounter = 0; 
+
+// The timing for ALL taps across the system
 const int PULSE_ON_TIME = 150;  
 const int PULSE_OFF_TIME = 250; 
 
@@ -63,9 +66,8 @@ void checkSerialCommands() {
   if (Serial.available() > 0) {
     // Read the incoming string until a newline character
     String cmd = Serial.readStringUntil('\n');
-    cmd.trim(); // Remove any accidental whitespace or carriage returns
+    cmd.trim(); 
 
-    // Print exactly what the Arduino thinks it received for debugging
     if (cmd.length() > 0) {
       Serial.print("Received command: [");
       Serial.print(cmd);
@@ -73,30 +75,16 @@ void checkSerialCommands() {
     }
 
     // Route the command to the correct trigger function
-    if (cmd == "forward") {
-      triggerPattern(FORWARD);
-    }
-    else if (cmd == "stop") {
-      triggerPattern(STOP);
-    }
-    else if (cmd == "left") {
-      triggerPattern(TURN_LEFT);
-    }
-    else if (cmd == "right") {
-      triggerPattern(TURN_RIGHT);
-    }
-    else if (cmd == "rotate_left") {
-      triggerPattern(ROTATE_LEFT);
-    }
-    else if (cmd == "rotate_right") {
-      triggerPattern(ROTATE_RIGHT);
-    }
-    else if (cmd == "idle") {
-      triggerPattern(IDLE);
-    }
-    else if (cmd.length() > 0) {
-      Serial.println("-> ERROR: Command not recognized.");
-    }
+    if (cmd == "forward") triggerPattern(FORWARD);
+    else if (cmd == "stop") triggerPattern(STOP);
+    else if (cmd == "left") triggerPattern(TURN_LEFT);
+    else if (cmd == "right") triggerPattern(TURN_RIGHT);
+    else if (cmd == "rotate_left") triggerPattern(ROTATE_LEFT);
+    else if (cmd == "rotate_right") triggerPattern(ROTATE_RIGHT);
+    else if (cmd == "u_turn") triggerPattern(U_TURN);
+    else if (cmd == "low_battery" || cmd == "error") triggerPattern(LOW_BATTERY);
+    else if (cmd == "idle") triggerPattern(IDLE);
+    else if (cmd.length() > 0) Serial.println("-> ERROR: Command not recognized.");
   }
 }
 
@@ -107,26 +95,25 @@ void triggerPattern(HapticState newState) {
   if (currentState != newState) {
     Serial.println("-> State Changed");
     currentState = newState;
-    isPulseOn = false;       // Reset the pulse phase
-    currentInterval = 0;     // Force the new pattern to start immediately
-    retractAllServosSmoothly(); // Retract all servos to ensure a clean slate
+    isPulseOn = false;       
+    currentInterval = 0;     
+    tapCounter = 0;             // Reset the tap counter for the new state
+    retractAllServosSmoothly(); 
   }
 }
 
 // --- SMOOTH MOVEMENT HELPER FUNCTIONS ---
 
-// Smoothly extend specific servos simultaneously to prevent power spikes
 void extendServosSmoothly(bool front, bool right, bool back, bool left) {
   for(int pos = SERVO_MIN; pos <= SERVO_MAX; pos += 20) {
     if(front) pwm.setPWM(PIN_FRONT, 0, pos);
     if(right) pwm.setPWM(PIN_RIGHT, 0, pos);
     if(back)  pwm.setPWM(PIN_BACK, 0, pos);
     if(left)  pwm.setPWM(PIN_LEFT, 0, pos);
-    delay(2); // A tiny 2ms delay spreads the massive current spike out over 50ms
+    delay(2); 
   }
 }
 
-// Smoothly retract all servos
 void retractAllServosSmoothly() {
   for(int pos = SERVO_MAX; pos >= SERVO_MIN; pos -= 20) {
     for(int i = 0; i < NUM_SERVOS; i++) {
@@ -136,9 +123,7 @@ void retractAllServosSmoothly() {
   }
 }
 
-
 // --- THE STATE MACHINE ---
-// Runs constantly in the loop, creating a continuous pulse based on the active state
 
 void updateHaptics() {
   unsigned long currentMillis = millis();
@@ -159,17 +144,26 @@ void updateHaptics() {
   // Toggle the pulse state (ON to OFF, or OFF to ON)
   isPulseOn = !isPulseOn; 
   
-  // Set the duration for the next cycle
+  // Set the duration for the next cycle (Now identical for all commands)
   currentInterval = isPulseOn ? PULSE_ON_TIME : PULSE_OFF_TIME;
 
   // If it's the "OFF" phase of the pulse, retract everything smoothly
   if (!isPulseOn) {
     retractAllServosSmoothly();
+    
+    // Check if we just completed a tap during a finite state
+    if (currentState == LOW_BATTERY) {
+      tapCounter++;
+      // If we have completed 3 standard taps, automatically switch back to IDLE
+      if (tapCounter >= 3) {
+        Serial.println("-> Alert Complete. Returning to IDLE.");
+        triggerPattern(IDLE);
+      }
+    }
     return;
   }
 
   // If it's the "ON" phase of the pulse, sweep the correct servos forward smoothly
-  // Format: extendServosSmoothly(FRONT, RIGHT, BACK, LEFT);
   switch (currentState) {
     case FORWARD:
       extendServosSmoothly(true, false, false, false);
@@ -193,6 +187,14 @@ void updateHaptics() {
       
     case ROTATE_RIGHT:
       extendServosSmoothly(false, true, false, false);
+      break;
+      
+    case U_TURN:
+      extendServosSmoothly(false, false, true, false);
+      break;
+      
+    case LOW_BATTERY:
+      extendServosSmoothly(false, false, true, false);
       break;
   }
 }
