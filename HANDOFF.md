@@ -228,38 +228,47 @@ All 17 tests pass. YOLO is mocked so no model download is needed to run tests.
 | `cv/webcam_test.py` | Done | Local smoke test against laptop webcam |
 | `server.py` | Done | Uvicorn entry point |
 | `tests/` | Done | 17 unit tests, all passing |
+| `ios/Sources/Perception/ObjectDetectionService.swift` | Done (needs model) | CoreML inference + LiDAR fusion, settle/refractory, reports via `VisionHazardSource` |
+| `ios/Sources/Perception/CollisionPredictor.swift` | Done | Pure threat/action logic for audio layer; `ThreatLevel`, `NavigationAction`, `ObstacleThreat`, `CVDetection` types |
 
-## Planned: on-device CoreML (no Wi-Fi)
+## On-device CoreML path (built — pending model file)
 
-The Wi-Fi server is a working prototype. The demo target is everything running on the phone.
+`ios/Sources/Perception/ObjectDetectionService.swift` is wired and compiling under Swift 6 strict concurrency. The Wi-Fi server still works as a fallback, but the demo target is everything on the phone.
 
-**Steps:**
+**How it works:**
 
-1. Export the CoreML model:
-   ```bash
-   python3 -c "from ultralytics import YOLO; YOLO('yolov8n.pt').export(format='coreml')"
-   ```
-   Drag `yolov8n.mlpackage` into the Xcode target.
+`DepthService` now exposes `onFrame: ((CVPixelBuffer, CVPixelBuffer?, BandDepths) -> Void)?` called on ARKit's serial queue at ~10 Hz. `ObjectDetectionService.start(depthService:hazard:)` registers this callback in `AppModel.init()` and loads the model async in the background.
 
-2. **`ObjectDetectionService.swift`** (Sam's side) — new Swift service that:
-   - Subscribes to frames from `DepthService` via a callback (add `var onFrame: ((ARFrame) -> Void)?` to `DepthService`)
-   - Runs `VNCoreMLRequest` on `ARFrame.capturedImage`
-   - Scales each bounding box from RGB to depth map coordinates (same math as `pipeline.py _fuse`)
-   - Samples inner 50% of the scaled box
-   - Calls `VisionHazardSource.report()` with the nearest threat, `clear()` when nothing in path
+Each callback:
+1. Skips every other call (runs at ~5 Hz to stay off thermals)
+2. Runs `VNCoreMLRequest` on `ARFrame.capturedImage` with `.right` orientation (corrects landscape sensor to portrait)
+3. Filters to `navigationClasses` at ≥ 0.35 confidence
+4. Maps each bounding box's horizontal center to the matching LiDAR band depth
+5. Picks the nearest in-range detection and constructs a `Hazard`
+6. Applies settle (3 consecutive frames) + refractory (10 frames, ~1 s) before calling `VisionHazardSource.report()` / `clear()`
 
-3. Wire into `AppModel` (Sam's side): add `let objectDetection = ObjectDetectionService()`, start/stop alongside `DepthService`.
+`AppModel.currentHazard()` already polls `vision.currentHazard`, so the belt and arbitration require no changes.
 
-## Planned: collision prediction and action layer
+**To activate (one-time):**
 
-Pure logic on top of raw detections. Fully testable with no sensors.
+```bash
+python3 -c "from ultralytics import YOLO; YOLO('yolov8n.pt').export(format='coreml', nms=True)"
+```
 
-**New types:**
+Drag `yolov8n.mlpackage` into the Xcode project Sources group and check "Add to target: CitrusSquad." The `nms=True` flag is required — without it the model outputs raw tensors instead of `VNRecognizedObjectObservation` and nothing will be detected.
+
+Until the model is bundled, `objectDetection.modelLoaded` stays `false` and the service is silent (safe failure).
+
+## Collision prediction and action layer (built)
+
+`ios/Sources/Perception/CollisionPredictor.swift` — pure logic, no sensors, no side effects.
+
+**Types shipped:**
 
 ```swift
-enum ThreatLevel { case none, advisory, warning, urgent }
+enum ThreatLevel: Sendable { case none, advisory, warning, urgent }
 
-enum NavigationAction {
+enum NavigationAction: Sendable, Equatable {
     case clear
     case stepLeft(paces: Int)
     case stepRight(paces: Int)
@@ -267,34 +276,34 @@ enum NavigationAction {
     case slowDown
 }
 
-struct ObstacleThreat {
+struct ObstacleThreat: Sendable {
     var label: String
     var distanceMeters: Double
     var horizontalNorm: Double   // 0.0 = far left, 1.0 = far right
     var level: ThreatLevel
     var action: NavigationAction
 }
+
+struct CVDetection: Sendable {
+    var label: String
+    var confidence: Float
+    var horizontalNorm: Double
+    var distanceMeters: Double   // -1 if unknown
+}
 ```
 
-**Decision logic in `CollisionPredictor`:**
+**`CollisionPredictor.assess(detections:bands:)`** — entry point. Fuses LiDAR band depths into each detection, filters to things within 5 m, picks the nearest, grades it, and picks a dodge direction by checking which LiDAR band has clear space.
 
-1. Is it in path? `horizontal_norm` in `[0.35, 0.65]` = dead ahead
-2. How urgent? `< 1.5m` = urgent, `1.5–3m` = warning, `3–5m` = advisory
-3. Which side is clear? Check LiDAR band readings from `DepthService` for open space
-4. Paces to clear: `ceil(clearance_needed / 0.75)` where clearance = object half-width + 0.5m margin
-5. Output: belt tap direction + pace count for audio layer
+`AppModel.objectDetection.currentThreat` exposes the latest `ObstacleThreat?`. Josh's audio layer can read it from there and speak "person ahead, step left 2 paces."
 
-**Concrete example (pole at 2m, dead center):**
+**Concrete example (pole at 2 m, dead center):**
 ```
-horizontal_norm = 0.51  → in path
-depth_min_m = 2.0       → warning
-label = "pole"          → static
-left LiDAR band: clear  → step left
-paces = ceil(0.54 / 0.75) = 1
+horizontal_norm = 0.51  → center band → centerMass mask
+depth = 2.0 m           → warning
+left LiDAR band: clear  → stepLeft(paces: 1)
 
-→ StepLeft(paces: 1)
-→ Belt: left tap
-→ Audio: "pole ahead, step left 1 pace"
+Belt fires: centerMass tap
+Audio can say: "pole ahead, step left 1 pace"
 ```
 
 ## Open items

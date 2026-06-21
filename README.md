@@ -29,24 +29,25 @@ The CV layer adds object awareness on top of the LiDAR obstacle detection alread
 - **`server.py`** — entry point (`uvicorn server:app --host 0.0.0.0 --port 8000`).
 - **`tests/`** — 17 unit tests covering depth fusion math and the wire protocol parser.
 
-### Planned: on-device CoreML path (no Wi-Fi required)
+### On-device CoreML path (built, pending model file)
 
-The Wi-Fi server works for prototyping but has a single point of failure at demo time. The target is to run everything on the phone:
+All inference runs on the phone. No Wi-Fi dependency, no laptop at demo time.
 
-1. Export `yolov8n.mlpackage` from the Python model (`YOLO("yolov8n.pt").export(format="coreml")`).
-2. **`ObjectDetectionService.swift`** — subscribes to the ARKit session already running in `DepthService`. Each `ARFrame` carries both the camera image and the LiDAR depth map. Runs `VNCoreMLRequest` on the camera image, scales bounding boxes to depth coordinates, samples the inner 50% of each box (same as the Python fusion logic), and calls `VisionHazardSource.report()` with the result.
-3. No Wi-Fi dependency. No laptop. All inference runs on the Neural Engine.
+- **`ios/Sources/Perception/ObjectDetectionService.swift`** — hooks into `DepthService.onFrame` (10 Hz). Runs `VNCoreMLRequest` on the ARKit camera frame at 5 Hz, fuses each detected bounding box with the LiDAR band depth at that horizontal position, applies a settle filter (3 consecutive frames before firing) and a refractory period (~1 s after clearing), then calls `VisionHazardSource.report()` to feed the existing tick loop. No changes to the belt protocol or arbitration logic.
+- To activate: export the model and drag it into Xcode. One command: `python3 -c "from ultralytics import YOLO; YOLO('yolov8n.pt').export(format='coreml', nms=True)"`, then drag `yolov8n.mlpackage` into the Xcode project Sources group and check "Add to target: CitrusSquad." Until then the service starts but `modelLoaded` stays false and no detections fire.
 
-### Planned: collision prediction and action layer
+### Collision prediction and action layer (built)
 
-Pure-logic layer on top of raw detections. For each detection, it asks: is this object in my path, how close, and what is the best move?
+Pure-logic layer on top of raw detections. No sensors, fully unit-testable.
+
+- **`ios/Sources/Perception/CollisionPredictor.swift`** — for each detection, asks: is this object in my path, how close, and what is the best move?
 
 ```
-Input:  DepthFusedDetection list + LiDAR band readings
-Output: NavigationAction (StepLeft(paces: 2), StepRight(paces: 1), Stop, SlowDown, Clear)
+Input:  [CVDetection] + LiDAR BandDepths
+Output: ObstacleThreat (label, distance, ThreatLevel, NavigationAction)
 ```
 
-Decision factors: horizontal position (is it centered?), distance (how urgent?), object type (static pole vs. moving person), and which side has more open space. Belt fires the directional tap; Josh's audio layer can say "pole ahead, step left 2 paces."
+`ThreatLevel`: `advisory` (3–5 m), `warning` (1.5–3 m), `urgent` (< 1.5 m). `NavigationAction`: `stepLeft(paces:)`, `stepRight(paces:)`, `stop`, `slowDown`, `clear`. Checks which LiDAR band has clear space to decide which way to dodge. Belt fires the directional tap; Josh's audio layer can speak "pole ahead, step left 2 paces."
 
 ### Running the Python CV server
 
@@ -75,7 +76,7 @@ python3 -m pytest tests/ -v
 iPhone (Citrus Squad app)                         ESP32 (belt)
   Maps directions + compass  -> turn cue            receives one LC2 packet
   LiDAR scene depth          -> obstacle cue        per 100 ms heartbeat,
-  YOLOv8n CoreML (planned)   -> object ID + action  renders the event as a
+  YOLOv8n CoreML              -> object ID + action  renders the event as a
         |                                            servo pattern
         v  arbitrate (safety > direction)
   one LC2 packet / 100 ms  --UDP over Wi-Fi-->  4 servos: Far L, L, R, Far R
