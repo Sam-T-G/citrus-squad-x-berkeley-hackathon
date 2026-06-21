@@ -57,12 +57,20 @@ actor VoiceSession {
             report(.state(.listening))
         } catch {
             log.error("voice start failed: \(error.localizedDescription, privacy: .public)")
+            teardown()
             report(.state(.failed("\(error)")))
-            await stop()
         }
     }
 
     func stop() async {
+        teardown()
+        report(.state(.idle))
+    }
+
+    /// Tear down the socket and audio without reporting a state. Callers choose the terminal state:
+    /// `stop()` reports `.idle`, the failure paths report `.failed` afterward so the reason is not
+    /// clobbered by an idle (the bug that made a failed connect snap straight back to "Tap to talk").
+    private func teardown() {
         closeTimer?.cancel(); closeTimer = nil
         micPump?.cancel(); micPump = nil
         receiveLoop?.cancel(); receiveLoop = nil
@@ -72,7 +80,6 @@ actor VoiceSession {
             socket?.cancel(with: .goingAway, reason: nil)
             socket = nil
         }
-        report(.state(.idle))
     }
 
     private func scheduleClose(after delay: Duration) {
@@ -126,10 +133,24 @@ actor VoiceSession {
     private func listen() {
         receiveLoop = Task { [weak self] in
             while !Task.isCancelled {
-                guard let self, let message = try? await self.nextMessage() else { break }
+                guard let self else { return }
+                guard let message = try? await self.nextMessage() else {
+                    await self.connectionDropped()
+                    return
+                }
                 await self.process(message)
             }
         }
+    }
+
+    /// The receive loop ended without an external stop, so the socket dropped (auth, credits, or a
+    /// network blip). Surface it instead of leaving the UI stuck on "Listening". A deliberate stop or
+    /// an Error frame tears down first and nils the socket, so this is a no-op in those cases.
+    private func connectionDropped() {
+        guard socket != nil else { return }
+        log.error("voice socket dropped")
+        teardown()
+        report(.state(.failed("connection dropped")))
     }
 
     private func nextMessage() async throws -> URLSessionWebSocketTask.Message? {
@@ -177,8 +198,8 @@ actor VoiceSession {
             let detail = json["description"] as? String ?? type
             log.error("voice agent \(type, privacy: .public): \(detail, privacy: .public)")
             if type == "Error" {
+                teardown()
                 report(.state(.failed(detail)))
-                await stop()
             }
         default:
             break
@@ -236,15 +257,17 @@ actor VoiceSession {
             ],
             "agent": [
                 "listen": ["provider": ["type": "deepgram", "model": "nova-3"]],
-                // Claude as the Deepgram-managed think provider (no endpoint, no key handed to
-                // Deepgram, billed against the Deepgram credit). The model id is Deepgram's
-                // managed-Anthropic allowlist string, NOT the native API id: claude-4-5-haiku-latest,
-                // not claude-haiku-4-5. Haiku keeps the think pass fast; the in-function tiers still
-                // call Claude directly with our own key for the heavier describe and vision work.
-                // VERIFY ON DEVICE: confirm FunctionCallRequest still fires with the anthropic
-                // provider before trusting the tier system, and watch the think latency vs gpt-4o-mini.
+                // Think runs on Deepgram-managed gpt-4o-mini (provider.type open_ai, no key handed to
+                // Deepgram). Claude was the original plan, but on this Deepgram account the managed
+                // model claude-4-5-haiku-latest returns INVALID_SETTINGS: model not available (logged
+                // in docs/14 and STATUS.md on 2026-06-21). Do NOT switch the provider back to anthropic
+                // until that model is provisioned on the account, or the live session errors out. To
+                // run Claude here without managed access, the only working route is a bring-your-own
+                // endpoint (provider.type open_ai + endpoint.url to an OpenAI-compatible Claude gateway)
+                // with our own key. Either way, Claude still does the heavier describe and vision work
+                // in-function via our own Anthropic key, which is the cleaner integration anyway.
                 "think": [
-                    "provider": ["type": "anthropic", "model": "claude-4-5-haiku-latest"],
+                    "provider": ["type": "open_ai", "model": "gpt-4o-mini"],
                     "prompt": Self.systemPrompt,
                     "functions": VoiceFunction.allSpecs,
                 ],

@@ -41,7 +41,8 @@ actor ClaudeClient {
     /// parseable verdict instead of free text: `approved` plus the line to speak (the verifier may
     /// tighten the phrasing). Returns `nil` on failure; a `nil` or unapproved verdict means speak the
     /// grounded fallback, never the unverified draft.
-    func verify(systemPrompt: String, snapshotXML: String, draft: String) async -> VerifiedLine? {
+    func verify(systemPrompt: String, snapshotXML: String, draft: String,
+                timeout: TimeInterval = CitrusSquadConfig.claudeTimeoutSeconds) async -> VerifiedLine? {
         let user = """
         \(snapshotXML)
 
@@ -54,7 +55,7 @@ actor ClaudeClient {
         """
         let request = Request(model: CitrusSquadConfig.claudeVerifyModel,
                               system: systemPrompt, userText: user,
-                              jsonSchema: VerifiedLine.schema)
+                              jsonSchema: VerifiedLine.schema, timeout: timeout)
         guard let json = await firstText(for: request),
               let data = json.data(using: .utf8) else { return nil }
         return try? JSONDecoder().decode(VerifiedLine.self, from: data)
@@ -96,8 +97,24 @@ actor ClaudeClient {
     /// ignored. Costs a negligible request, worth it for first-call latency on stage.
     func prewarm() async {
         guard isConfigured else { return }
-        _ = await firstText(for: Request(model: CitrusSquadConfig.claudeDraftModel,
-                                         system: "warmup", userText: "hi", maxTokens: 1, timeout: 4))
+        // Warm the TLS connection, the models, and the two structured-output schemas. A json_schema is
+        // compiled once and then cached server-side for about a day, so paying that cost here at launch
+        // keeps the first describe and the first sign read from spending it under their live timeout. A
+        // cold schema on stage can make the first read fall back to "I couldn't read that," which is the
+        // strongest demo moment, so it is worth a few throwaway requests. Results are discarded; only the
+        // warmed connection and the cached schemas matter.
+        async let draft: String? = firstText(for: Request(
+            model: CitrusSquadConfig.claudeDraftModel,
+            system: "warmup", userText: "hi", maxTokens: 1, timeout: 4))
+        async let verifySchema: String? = firstText(for: Request(
+            model: CitrusSquadConfig.claudeVerifyModel,
+            system: "warmup", userText: "warmup",
+            jsonSchema: VerifiedLine.schema, maxTokens: 64, timeout: 6))
+        async let readSchema: String? = firstText(for: Request(
+            model: CitrusSquadConfig.claudeVisionModel,
+            system: "warmup", userText: "warmup",
+            jsonSchema: VisionRead.schema, maxTokens: 128, timeout: 6))
+        _ = await (draft, verifySchema, readSchema)
     }
 
     // MARK: - Request

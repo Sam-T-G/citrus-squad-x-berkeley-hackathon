@@ -606,23 +606,52 @@ final class AppModel {
     // on-device state (Tier 0) or a small geocode/route call (Tier 1) and never touches this section.
     // See `ios/VOICE-AI-PIPELINE.md`.
 
-    /// Tier 2 (judgment): describe the scene. Three gates keep it fast and honest. First, if there is
-    /// nothing notable in range, the grounded "clear" line is already the whole answer, so Claude is
-    /// skipped entirely. Otherwise one fast-model call drafts a line over the structured snapshot under
-    /// a tight voice timeout. Then a local guard (no second API call) rejects any line that claims a
-    /// clear path the LiDAR contradicts. Any miss falls back to the sensor-grounded string.
+    /// Tier 2 (judgment): describe the scene. Gates keep it fast and honest. First, if there is nothing
+    /// notable in range, the grounded "clear" line is already the whole answer, so Claude is skipped
+    /// entirely. Otherwise Haiku drafts a line over the structured snapshot, a local guard rejects any
+    /// draft that claims a clear path the LiDAR contradicts, and a stronger model verifies the draft
+    /// against the same scene before it is spoken. The draft, the guard, and the verify share one voice
+    /// budget, so the two-model path never holds the Deepgram turn longer than the single-model path
+    /// did. Any miss falls back to the sensor-grounded string.
     private func describeScene() async -> String {
         let grounded = spokenSurroundings()
         let snapshot = perceptionSnapshot()
         guard snapshot.isInformative, await claude.isConfigured else { return grounded }
-        let line = await claude.draftLine(
+
+        // The whole describe answer has to come back inside one voice budget, because the Deepgram turn
+        // is held open while it runs. Verify only gets whatever the draft left, so the two-model path
+        // never holds the turn longer than the single-model path. With the schemas pre-warmed, the draft
+        // usually finishes fast and leaves the verify real time to work.
+        let budget = CitrusSquadConfig.claudeVoiceTimeoutSeconds
+        let deadline = Date().addingTimeInterval(budget)
+        let snapshotXML = snapshot.xmlForClaude()
+
+        // 1. Haiku drafts a candidate over the structured scene.
+        guard let draft = await claude.draftLine(
             systemPrompt: Self.reasoningContract,
-            snapshotXML: snapshot.xmlForClaude(),
+            snapshotXML: snapshotXML,
             instruction: "In one short spoken sentence, describe what is ahead for a walker, " +
                 "prioritizing anything close or in the path.",
-            timeout: CitrusSquadConfig.claudeVoiceTimeoutSeconds)
-        guard let line, SpokenLineGuard.isConsistent(line, with: snapshot) else { return grounded }
-        return line
+            timeout: budget) else { return grounded }
+
+        // 2. Instant on-device backstop: a draft that claims a clear path the LiDAR denies is never
+        // spoken, whatever any model says.
+        guard SpokenLineGuard.isConsistent(draft, with: snapshot) else { return grounded }
+
+        // 3. Evaluator-optimizer: a stronger model checks the draft against the same scene before the
+        // wearer hears it, and may tighten the wording. If no budget is left or it cannot answer in
+        // time, speak the guard-approved draft so the wearer still gets an answer.
+        let remaining = deadline.timeIntervalSinceNow
+        guard remaining > 0.4,
+              let verdict = await claude.verify(
+                systemPrompt: Self.reasoningContract,
+                snapshotXML: snapshotXML,
+                draft: draft,
+                timeout: remaining)
+        else { return draft }
+        guard verdict.approved else { return grounded }
+        let phrase = verdict.phrase.trimmingCharacters(in: .whitespacesAndNewlines)
+        return phrase.isEmpty ? draft : phrase
     }
 
     /// Tier 3 (vision): read a sign, label, or printed text the wearer points the camera at. This is
@@ -867,8 +896,11 @@ final class AppModel {
 
         let decided: ResolvedCue
         if let person {
+            // Guide the wearer to safety: tap the side AWAY from the person so the belt steers them
+            // around the collision, rather than buzzing the side the person is on. A person on the
+            // left taps Right (go right); dead-ahead has no clear escape, so it stays a front alert.
             decided = ResolvedCue(event: person.event,
-                                  mask: person.mask,
+                                  mask: Self.escapeSide(from: person.mask),
                                   intensity: ResolvedCue.intensity(forDistance: person.distanceMeters),
                                   source: .hazard,
                                   label: person.label)
@@ -894,6 +926,16 @@ final class AppModel {
         // do not collide; an urgent hazard still speaks through (decided inside the sink).
         audio.voiceActive = voice.isEngaged
         for sink in cueSinks { sink.emit(decided) }
+    }
+
+    /// Turn a person's location into the escape direction: tap the opposite side so the belt steers
+    /// the wearer away from the collision. Left becomes Right and vice versa; a centered person has no
+    /// clear escape, so it stays a front alert. Keeps the belt's job "guide to safety," not "point at
+    /// the hazard."
+    static func escapeSide(from mask: QuadrantMask) -> QuadrantMask {
+        if mask.contains(.left), !mask.contains(.right) { return .right }
+        if mask.contains(.right), !mask.contains(.left) { return .left }
+        return mask
     }
 
     /// The LiDAR obstacle-avoidance cue, or nil when the path is clear. Reads the three depth bands,

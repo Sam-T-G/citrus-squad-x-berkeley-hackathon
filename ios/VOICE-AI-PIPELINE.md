@@ -79,14 +79,18 @@ That is where Claude earns a call. Three gates keep it fast and safe:
 1. **Skip when there is nothing to judge.** If the snapshot is not informative (no tracked object and
    no LiDAR return inside the belt range), the grounded "your path ahead is clear" line is already the
    whole answer, so the model call is skipped entirely. The common open-sidewalk case pays nothing.
-2. **One call, under a tight timeout.** When there is something to describe, the fast model drafts one
-   sentence over the snapshot XML under a 2.5 s ceiling. The Deepgram turn is held open while this
-   runs, so the budget is deliberately short; past it, the grounded line is spoken instead.
-3. **A local guard instead of a second model call.** The first cut verified the draft with a second,
-   stricter model call, which doubled the latency. That is replaced by `SpokenLineGuard`, a local
-   instant check that refuses one specific dangerous hallucination: a "clear path" claim when the LiDAR
-   says something is close. Anything it rejects falls back to the grounded line. The one error that can
-   hurt the wearer is caught for free; phrasing and labels are left to the snapshot's grounding.
+2. **One shared budget, not one call per model.** When there is something to describe, Haiku drafts a
+   sentence over the snapshot XML, then Sonnet verifies that draft, and both share a single 2.5 s
+   ceiling. The verify only gets the time the draft left, so the two-model path never holds the Deepgram
+   turn longer than the single-model path did. Past the budget, the guard-approved draft or the grounded
+   line is spoken instead.
+3. **A draft, an instant guard, then a verify.** Haiku's draft is never spoken on trust. First a local
+   instant check, `SpokenLineGuard`, refuses the one dangerous hallucination: a "clear path" claim when
+   the LiDAR says something is close, and falls back to the grounded line. Then, in whatever budget the
+   draft left, Sonnet verifies the draft against the same scene and may tighten the wording. An
+   unapproved verdict falls back to the grounded line; a verify that runs out of time falls back to the
+   guard-approved draft. The guard is the always-on backstop that costs nothing, and the verify is the
+   evaluator-optimizer pass that runs when there is time for it.
 
 ### Why the vision reads are Tier 3 and latency-tolerant
 
@@ -104,8 +108,9 @@ reason, never a guess. The `.thinking` chime plays while they run, so the wait i
   miss (no key, timeout, error, refusal, rejected line). Deepgram is the voice regardless; Claude only
   upgrades the line when it comes back in time and clean.
 - **Skip-when-trivial.** Describe pays for Claude only when the scene has something to describe.
-- **Local guard, not a second call.** `SpokenLineGuard` replaces a model round trip with an on-device
-  check for the one dangerous claim.
+- **Guard always, verify when there is time.** `SpokenLineGuard` is an instant on-device backstop on
+  every draft. The Sonnet verify adds a second-model check in whatever budget the draft leaves, and
+  degrades to the guard-approved draft when the budget is spent, so it never holds the turn open longer.
 - **Tight per-tier timeouts.** 2.5 s for describe, 5 s for a vision read, 6 s for the manual HUD
   buttons. The live voice budgets are short so Deepgram is never left holding a dead turn.
 - **Connection pre-warm.** One tiny throwaway request at launch warms the TLS connection, so the first
@@ -142,8 +147,8 @@ Deepgram floor.
 ## Tools added this pass
 
 - `Sources/AI/ClaudeClient.swift` — per-call `timeout`, and `prewarm()` for the launch TLS warm.
-- `Sources/Perception/SpokenLineGuard.swift` — the local, instant clear-path consistency check that
-  replaces the second model call on the voice path.
+- `Sources/Perception/SpokenLineGuard.swift` — the local, instant clear-path consistency check; the
+  always-on backstop on the voice path, with the Sonnet verify layered on top in the leftover budget.
 - `Sources/Perception/PerceptionSnapshot.swift` — `isInformative` (skip-when-trivial) and
   `hasCloseObstacle` (what the guard reads).
 - `Sources/CitrusSquadConfig.swift` — `claudeVoiceTimeoutSeconds` (2.5), `claudeVisionTimeoutSeconds`

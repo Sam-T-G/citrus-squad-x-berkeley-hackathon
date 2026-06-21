@@ -12,6 +12,7 @@ struct VoiceControlView: View {
         VStack(spacing: 8) {
             button
             transcriptLine
+            failureLine
         }
         .onChange(of: voice.state) { _, newState in
             switch newState {
@@ -67,6 +68,17 @@ struct VoiceControlView: View {
             .multilineTextAlignment(.center)
             .frame(maxWidth: .infinity)
             .accessibilityElement(children: .combine)
+        }
+    }
+
+    @ViewBuilder private var failureLine: some View {
+        if case .failed(let reason) = voice.state {
+            Text(reason)
+                .font(.caption2)
+                .foregroundStyle(.orange)
+                .multilineTextAlignment(.center)
+                .frame(maxWidth: .infinity)
+                .accessibilityLabel("Voice error: \(reason)")
         }
     }
 
