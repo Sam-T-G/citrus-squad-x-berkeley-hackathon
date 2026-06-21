@@ -32,8 +32,8 @@ struct DemoView: View {
     private var topRow: some View {
         HStack(alignment: .top, spacing: 12) {
             DirectionsBanner(model: model)
-            Spacer(minLength: 0)
-            Minimap(model: model)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            Minimap(model: model, diameter: 116)
         }
     }
 
@@ -47,6 +47,7 @@ struct DemoView: View {
             StatusBar(model: model)
             controls
         }
+        .frame(maxWidth: .infinity)
     }
 
     private var controls: some View {
@@ -70,6 +71,7 @@ struct DemoView: View {
                     .disabled(model.route.path.count < 2 || model.location.location == nil)
             }
         }
+        .frame(maxWidth: .infinity)
         .padding(10)
         .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 16))
     }
@@ -172,13 +174,13 @@ private struct StatusBar: View {
 
     var body: some View {
         let visual = ProductionView.visual(for: model.resolved)
-        return HStack(spacing: 12) {
+        return HStack(spacing: 10) {
             cueChip(visual)
-            Spacer(minLength: 6)
+                .layoutPriority(1)
             BeltMini(mask: model.resolved.mask, accent: visual.color)
-            Spacer(minLength: 6)
             stats
         }
+        .frame(maxWidth: .infinity)
         .padding(.horizontal, 14)
         .padding(.vertical, 10)
         .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 16))
@@ -194,12 +196,14 @@ private struct StatusBar: View {
                 Text(visual.text)
                     .font(.subheadline.bold())
                     .foregroundStyle(.white)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.8)
                 Text(model.resolved.source.rawValue)
                     .font(.caption2.monospaced())
                     .foregroundStyle(.white.opacity(0.6))
             }
+            Spacer(minLength: 0)
         }
-        .fixedSize()
     }
 
     private var stats: some View {
