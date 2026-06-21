@@ -482,9 +482,14 @@ final class AppModel {
     private func currentTurnCue() -> Cue? {
         switch mode {
         case .bench:
+            // Bench is the operator's heading-to-cue diagnostic (the Nav bench slider sets the target
+            // bearing). It refreshes that card's cue read-out but does NOT drive the belt: with no
+            // destination loaded there is nothing to navigate to, so the belt stays quiet rather than
+            // steering toward a placeholder bearing. Load a route and Run sim or Walk GPS to navigate.
+            // The hazard tiers still fire without a route, so obstacle avoidance keeps working.
             guard location.trueHeading >= 0 else { return nil }
             route.update(phoneHeading: location.trueHeading)
-            return route.currentCue
+            return nil
         case .simulate:
             guard let (point, heading) = simulator.step(dt: 0.1) else { return nil }
             // The simulator's heading is already body-forward, so do not apply compass calibration.
