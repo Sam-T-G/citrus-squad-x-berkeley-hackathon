@@ -8,6 +8,8 @@ enum VoiceCommand: Sendable, Equatable {
     case whereAmI
     case describeSurroundings
     case recalibrate
+    case connectBelt
+    case disconnectBelt
     case stop
     /// A function the agent named that we cannot serve right now. The camera tools live here
     /// because the rear camera is exclusive with the ARKit LiDAR that runs the safety reflex
@@ -28,6 +30,10 @@ enum VoiceCommand: Sendable, Equatable {
             self = .describeSurroundings
         case VoiceFunction.recalibrate.name:
             self = .recalibrate
+        case VoiceFunction.connectBelt.name:
+            self = .connectBelt
+        case VoiceFunction.disconnectBelt.name:
+            self = .disconnectBelt
         case VoiceFunction.stop.name:
             self = .stop
         default:
@@ -46,6 +52,8 @@ enum VoiceFunction: String, CaseIterable, Sendable {
     case whereAmI
     case describeSurroundings
     case recalibrate
+    case connectBelt
+    case disconnectBelt
     case stop
 
     var name: String {
@@ -55,6 +63,8 @@ enum VoiceFunction: String, CaseIterable, Sendable {
         case .whereAmI: return "where_am_i"
         case .describeSurroundings: return "describe_surroundings"
         case .recalibrate: return "recalibrate"
+        case .connectBelt: return "connect_belt"
+        case .disconnectBelt: return "disconnect_belt"
         case .stop: return "stop"
         }
     }
@@ -66,6 +76,8 @@ enum VoiceFunction: String, CaseIterable, Sendable {
         case .whereAmI: return "Report the wearer's current location as a nearby place or address."
         case .describeSurroundings: return "Describe what is ahead, prioritized for a walker."
         case .recalibrate: return "Recapture the forward-facing heading offset."
+        case .connectBelt: return "Connect to the haptic belt so it can start tapping cues."
+        case .disconnectBelt: return "Disconnect from the haptic belt."
         case .stop: return "Stop navigation and guidance now."
         }
     }

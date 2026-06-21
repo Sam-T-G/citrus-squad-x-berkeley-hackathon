@@ -283,6 +283,14 @@ final class AppModel {
         case .describeSurroundings: return spokenSurroundings()
         case .recalibrate:
             return calibrate() ? "Recalibrated. Face forward and start walking." : "Hold still, then try again."
+        case .connectBelt:
+            guard !transmitting else { return "The belt is already connected." }
+            startLink()
+            return "Connecting to the belt."
+        case .disconnectBelt:
+            guard transmitting else { return "The belt is not connected." }
+            stopLink()
+            return "Disconnected from the belt."
         case .stop:
             stopSimulation()
             return "Stopped."

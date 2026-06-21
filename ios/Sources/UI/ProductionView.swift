@@ -1,46 +1,41 @@
 import SwiftUI
 
-/// The production operator screen for the demo. One glanceable display of what the belt is telling
-/// the wearer right now, plus the few controls a run needs: connect the belt, calibrate, run the
-/// route. The full per-sensor diagnostics live in their own tab (`ControlPanelView`). Both share
-/// one injected `AppModel`.
+/// The wearer's screen. A blind wearer drives everything by voice (hold the hardware side button and
+/// speak), so this stays calm and button-free: the big cue the belt is firing right now, the belt
+/// diagram, and the agent conversation. The manual run controls (connect, calibrate, load a route,
+/// simulate) live in the Diagnostics tab for a sighted operator. One injected `AppModel`.
 struct ProductionView: View {
     let model: AppModel
-    @State private var flash = false
 
     var body: some View {
-        VStack(spacing: 24) {
-            header
-            cueDisplay
-            BeltView(mask: model.resolved.mask, accent: Self.visual(for: model.resolved).color)
-            VoiceControlView(voice: model.voice)
-            Spacer()
-            controls
+        ScrollView {
+            VStack(spacing: 24) {
+                header
+                cueDisplay
+                BeltView(mask: model.resolved.mask, accent: Self.visual(for: model.resolved).color)
+                voicePanel
+            }
+            .padding()
+            .frame(maxWidth: .infinity)
         }
-        .padding()
         .background {
-            // Hardware volume buttons trigger a voice turn, so the wearer can talk by feel.
+            // The hardware side button (press and hold) starts a voice turn, so a wearer who cannot
+            // see the screen talks to the app by feel. No on-screen talk button is needed.
             VolumeButtonTriggerView { Task { await model.voice.toggle() } }
                 .frame(width: 1, height: 1)
-                .allowsHitTesting(false)
-        }
-        .overlay {
-            Color.green
-                .opacity(flash ? 0.4 : 0)
-                .ignoresSafeArea()
                 .allowsHitTesting(false)
         }
         .onChange(of: model.resolved.event) { _, newEvent in
             Feedback.cueChanged(to: newEvent, source: model.resolved.source)
         }
-    }
-
-    /// Brief green flash to confirm calibration without needing the screen.
-    private func flashScreen() {
-        withAnimation(.easeOut(duration: 0.12)) { flash = true }
-        Task { @MainActor in
-            try? await Task.sleep(for: .milliseconds(320))
-            withAnimation(.easeIn(duration: 0.35)) { flash = false }
+        .onChange(of: model.voice.state) { _, newState in
+            // Audible state tones so the wearer knows the agent is listening, thinking, or speaking.
+            switch newState {
+            case .connecting: Feedback.voiceActivating()
+            case .listening: Feedback.voiceReady()
+            case .thinking: Feedback.voiceProcessing()
+            default: break
+            }
         }
     }
 
@@ -98,52 +93,71 @@ struct ProductionView: View {
         .accessibilityLabel("Current cue: \(visual.text)")
     }
 
-    // MARK: - Controls
+    // MARK: - Voice conversation
 
-    private var controls: some View {
-        VStack(spacing: 12) {
-            HStack(spacing: 12) {
-                if model.transmitting {
-                    bigButton("Disconnect", tint: .gray) { model.stopLink() }
-                } else {
-                    bigButton("Connect belt", tint: .accentColor) { model.startLink() }
-                }
-                bigButton("Calibrate", tint: .gray) {
-                    if model.calibrate() {
-                        Feedback.calibrationConfirmed()
-                        flashScreen()
-                    }
-                }
-                .disabled(model.location.trueHeading < 0)
+    /// The agent conversation, shown elegantly: a live state line (the agent is listening, thinking,
+    /// or speaking), the last thing the wearer said, and the last thing the agent replied. There is no
+    /// talk button; the wearer holds the hardware side button to speak. See `VolumeButtonTriggerView`.
+    private var voicePanel: some View {
+        let status = Self.voiceStatus(for: model.voice.state)
+        return VStack(alignment: .leading, spacing: 16) {
+            HStack(spacing: 10) {
+                Image(systemName: status.symbol)
+                    .font(.title3.bold())
+                    .foregroundStyle(status.color)
+                    .symbolEffect(.pulse, isActive: model.voice.state == .listening)
+                    .contentTransition(.symbolEffect(.replace))
+                Text(status.title)
+                    .font(.headline)
+                    .foregroundStyle(status.color)
+                Spacer()
             }
-            HStack(spacing: 12) {
-                bigButton("Load route", tint: .gray) { model.loadDemoRoute() }
-                if model.isDriving {
-                    bigButton("Stop", tint: .gray) { model.stopDriving() }
+
+            if model.voice.lastTranscript.isEmpty && model.voice.lastReply.isEmpty {
+                Text(model.voice.isConfigured
+                     ? "Hold the side button and speak."
+                     : "Add voice keys to enable the assistant.")
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+            } else {
+                if !model.voice.lastTranscript.isEmpty {
+                    Text("\u{201C}\(model.voice.lastTranscript)\u{201D}")
+                        .font(.title3.weight(.medium))
+                        .foregroundStyle(.secondary)
+                }
+                if !model.voice.lastReply.isEmpty {
+                    Text(model.voice.lastReply)
+                        .font(.title3.weight(.semibold))
+                        .foregroundStyle(.primary)
                 }
             }
-            if !model.isDriving {
-                HStack(spacing: 12) {
-                    bigButton("Run sim", tint: .accentColor) { model.startSimulation() }
-                    bigButton("Walk GPS", tint: .accentColor) { model.startLiveWalk() }
-                        .disabled(model.route.path.count < 2 || model.location.location == nil)
-                }
-            }
-            Text(model.routeStatus)
-                .font(.caption)
-                .foregroundStyle(.secondary)
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(18)
+        .background(Color(.systemGray6), in: RoundedRectangle(cornerRadius: 20))
+        .animation(.easeOut(duration: 0.2), value: model.voice.lastReply)
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel(voiceAccessibilityLabel)
     }
 
-    private func bigButton(_ title: String, tint: Color, action: @escaping () -> Void) -> some View {
-        Button(action: action) {
-            Text(title)
-                .font(.headline)
-                .frame(maxWidth: .infinity)
-                .padding(.vertical, 10)
+    private var voiceAccessibilityLabel: String {
+        var parts = [Self.voiceStatus(for: model.voice.state).title]
+        if !model.voice.lastTranscript.isEmpty { parts.append("You said, \(model.voice.lastTranscript)") }
+        if !model.voice.lastReply.isEmpty { parts.append(model.voice.lastReply) }
+        return parts.joined(separator: ". ")
+    }
+
+    /// Voice state to a calm status line for the hold-to-talk model (no tap affordance).
+    private static func voiceStatus(for state: VoiceState) -> (title: String, symbol: String, color: Color) {
+        switch state {
+        case .idle: return ("Ready", "mic.fill", .accentColor)
+        case .connecting: return ("Connecting\u{2026}", "mic.fill", .gray)
+        case .listening: return ("Listening\u{2026}", "waveform", .blue)
+        case .thinking: return ("Thinking\u{2026}", "ellipsis", .indigo)
+        case .speaking: return ("Speaking\u{2026}", "speaker.wave.2.fill", .green)
+        case .unavailable: return ("Voice unavailable", "mic.slash.fill", .gray)
+        case .failed: return ("Voice error", "exclamationmark.triangle.fill", .orange)
         }
-        .buttonStyle(.borderedProminent)
-        .tint(tint)
     }
 
     // MARK: - Cue visuals
