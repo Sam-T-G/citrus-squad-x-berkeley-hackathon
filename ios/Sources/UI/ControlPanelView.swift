@@ -115,8 +115,8 @@ struct ControlPanelView: View {
 
     private var header: some View {
         VStack(spacing: 4) {
-            Text("Citrus Squad").font(.largeTitle.bold())
-            Text("Citrus Squad — phone-side control").font(.caption).foregroundStyle(.secondary)
+            Text("Wander").font(.largeTitle.bold())
+            Text("Wander — phone-side control").font(.caption).foregroundStyle(.secondary)
         }
         .padding(.top)
     }

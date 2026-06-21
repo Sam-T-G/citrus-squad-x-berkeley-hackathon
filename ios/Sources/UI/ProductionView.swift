@@ -44,7 +44,7 @@ struct ProductionView: View {
     private var header: some View {
         HStack(alignment: .top) {
             VStack(alignment: .leading, spacing: 2) {
-                Text("Citrus Squad").font(.largeTitle.bold())
+                Text("Wander").font(.largeTitle.bold())
                 Text(model.route.isCalibrated ? "calibrated" : "not calibrated")
                     .font(.caption)
                     .foregroundStyle(model.route.isCalibrated ? Color.green : Color.secondary)
