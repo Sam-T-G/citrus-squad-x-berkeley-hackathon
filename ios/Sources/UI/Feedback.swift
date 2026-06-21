@@ -34,11 +34,17 @@ enum Feedback {
         }
     }
 
-    /// Voice is now listening: the Siri-style begin-record tone plus a haptic, so the wearer knows to
-    /// start speaking without looking at the screen.
-    @MainActor static func voiceListening() {
-        AudioServicesPlaySystemSound(1113)   // begin record
-        UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+    /// The hold registered and the agent is loading: a light tick so the wearer knows it is coming.
+    @MainActor static func voiceActivating() {
+        UIImpactFeedbackGenerator(style: .light).impactOccurred()
+    }
+
+    /// The agent has loaded and is listening: a bright two-note chime plus the success haptic, a
+    /// satisfying "ready" confirmation the wearer hears even on silent (it plays via the media route,
+    /// not as a ringer-silenced system sound).
+    @MainActor static func voiceReady() {
+        ChimePlayer.shared.playReady()
+        UINotificationFeedbackGenerator().notificationOccurred(.success)
     }
 
     /// The turn ended and the agent is processing: the end-record tone plus a softer haptic.
