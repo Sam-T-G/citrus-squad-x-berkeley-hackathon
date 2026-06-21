@@ -33,6 +33,21 @@ enum CitrusSquadConfig {
     /// Lowest tap strength a graded hazard cue ever uses, so it is always felt.
     static let intensityFloor: UInt8 = 96
 
+    // Vision person-in-path tier (docs/12 §6, mirrors the cv/ Python defaults)
+    /// YOLO person-detection confidence floor. Cole's `cv/` default; err low, a missed person is
+    /// worse than a false tap for a safety device.
+    static let visionConfidenceThreshold: Float = 0.35
+    /// Inner-crop fraction of the person box used to sample depth, dodging LiDAR edge bleed.
+    static let depthCropRatio = 0.5
+    /// Person detection rate. The decide loop stays at 10 Hz; running YOLO slower protects thermals.
+    static let visionMaxHz = 4.0
+    /// Frames a person must persist in range before the cue fires.
+    static let visionSettleFrames = 3
+    /// Distance band past the threshold that keeps a firing cue alive, to stop edge flicker.
+    static let visionHysteresisMeters = 0.3
+    /// Minimum time between cue fire-or-clear transitions.
+    static let visionRefractorySeconds = 1.0
+
     // Navigation
     /// How close to a maneuver point counts as reaching it (advance to the next).
     static let maneuverArriveMeters = 2.0

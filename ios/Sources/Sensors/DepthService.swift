@@ -1,5 +1,6 @@
 import Foundation
 import ARKit
+import ImageIO
 import Observation
 import os
 
@@ -23,10 +24,32 @@ final class DepthService: NSObject {
     private let session = ARSession()
     private let log = Logger(subsystem: "com.samuelgerungan.CitrusSquad", category: "depth")
 
+    /// One serial queue carries every ARFrame, so the depth band scan and the heavier vision
+    /// inference both run off the main thread. The delegate's `nonisolated(unsafe)` state is touched
+    /// only here, which is what makes that annotation sound.
+    private let perceptionQueue = DispatchQueue(label: "com.citrussquad.perception", qos: .userInitiated)
+
     /// Throttle: process roughly every sixth frame, so a 60 Hz AR feed drives a ~10 Hz read.
     /// ARKit delivers frames on one serial queue, so this counter is only ever touched there.
     /// Kept out of observation so it stays a plain stored property the delegate can mutate.
     @ObservationIgnored nonisolated(unsafe) private var frameTick = 0
+
+    /// Person-in-path detector. The same ARFrame carries the RGB image and the depth map, so one
+    /// ARSession feeds both tiers; there is no second camera. It is `Sendable` and its own state is
+    /// confined to the perception queue, so a plain `let` reads cleanly from the delegate. See
+    /// `Perception/PersonDetector.swift` and `CV-PORT-PLAN.md`.
+    private let personDetector = PersonDetector()
+
+    /// Gate for the camera tier, toggled off the main actor by the thermal degrade ladder.
+    @ObservationIgnored nonisolated(unsafe) var visionEnabled = true
+
+    /// Where a resolved person cue and the overlay boxes go. Set once by `AppModel.attachVision`.
+    private weak var visionSink: VisionHazardSource?
+    private weak var detectionStore: DetectionStore?
+
+    /// Rear camera in portrait. The one runtime unknown; see `PersonDetector.toNativeNormalized`.
+    nonisolated private static let cameraOrientation: CGImagePropertyOrientation = .right
+    nonisolated private static let visionThrottle = 1.0 / CitrusSquadConfig.visionMaxHz
 
     private(set) var isRunning = false
     private(set) var bands = BandDepths()
@@ -49,6 +72,13 @@ final class DepthService: NSObject {
     override init() {
         super.init()
         session.delegate = self
+        session.delegateQueue = perceptionQueue
+    }
+
+    /// Wire the person tier to its sink and the demo overlay. Called once by `AppModel`.
+    func attachVision(sink: VisionHazardSource, store: DetectionStore) {
+        visionSink = sink
+        detectionStore = store
     }
 
     func start() {
@@ -74,6 +104,30 @@ extension DepthService: ARSessionDelegate {
         guard frameTick % 6 == 0, let depth = frame.sceneDepth?.depthMap else { return }
         let sampled = Self.bandedNearest(in: depth)
         Task { @MainActor in self.bands = sampled }
+
+        // Person tier off the same frame: RGB for YOLO, this depth map for fusion. process() throttles
+        // itself to the camera rate, so most frames return nil here and the cue is left untouched.
+        guard visionEnabled else { return }
+        let result = personDetector.process(
+            image: frame.capturedImage, depth: depth, orientation: Self.cameraOrientation,
+            now: frame.timestamp, throttleInterval: Self.visionThrottle, config: .demo)
+        if let result {
+            Task { @MainActor in self.applyVision(result) }
+        }
+    }
+
+    /// Push the gated person cue and the overlay boxes to the main actor. `.hold` leaves the cue
+    /// exactly as the last tick set it.
+    @MainActor private func applyVision(_ result: PersonFrameResult) {
+        switch result.action {
+        case .report(let side, let distance):
+            visionSink?.report(kind: .person, side: side, distanceMeters: distance)
+        case .clear:
+            visionSink?.clear()
+        case .hold:
+            break
+        }
+        detectionStore?.update(result.overlay)
     }
 
     nonisolated func session(_ session: ARSession, didFailWithError error: Error) {
