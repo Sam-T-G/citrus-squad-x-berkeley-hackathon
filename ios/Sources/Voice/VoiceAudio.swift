@@ -74,9 +74,11 @@ final class MicCapture {
 
 /// Plays the Deepgram TTS audio chunks the agent sends back. Confined to the `VoiceSession` actor.
 ///
-/// VERIFY ON DEVICE: match the format to the `audio.output` block in the Settings message (24 kHz
-/// linear16 default). The int16 mixer connection is the first thing to check if playback is silent;
-/// it may need a float format plus a converter.
+/// The agent streams 24 kHz mono linear16 (Int16), matching the `audio.output` block in the Settings
+/// message. The player node is connected to the mixer in float32, the format AVAudioEngine mixes
+/// natively, and each Int16 chunk is converted on the way in (see `buffer(from:)`). A direct Int16
+/// mixer connection can play silent on device, so the conversion removes that unknown. If the
+/// `audio.output` sample rate ever changes, change the 24 kHz here to match it.
 final class TTSPlayer {
     private let engine = AVAudioEngine()
     private let player = AVAudioPlayerNode()
@@ -84,10 +86,10 @@ final class TTSPlayer {
     private var running = false
 
     init?() {
-        guard let format = AVAudioFormat(commonFormat: .pcmFormatInt16,
+        guard let format = AVAudioFormat(commonFormat: .pcmFormatFloat32,
                                          sampleRate: 24_000,
                                          channels: 1,
-                                         interleaved: true) else { return nil }
+                                         interleaved: false) else { return nil }
         self.format = format
         engine.attach(player)
         engine.connect(player, to: engine.mainMixerNode, format: format)
@@ -113,11 +115,15 @@ final class TTSPlayer {
         let frameCount = AVAudioFrameCount(data.count / MemoryLayout<Int16>.size)
         guard frameCount > 0,
               let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: frameCount),
-              let channel = buffer.int16ChannelData else { return nil }
+              let channel = buffer.floatChannelData else { return nil }
         buffer.frameLength = frameCount
+        // The agent sends Int16 linear16; the player node mixes in float32. Scale each sample into
+        // [-1, 1] as it copies across.
         data.withUnsafeBytes { raw in
-            if let base = raw.bindMemory(to: Int16.self).baseAddress {
-                channel[0].update(from: base, count: Int(frameCount))
+            let samples = raw.bindMemory(to: Int16.self)
+            let out = channel[0]
+            for index in 0..<Int(frameCount) {
+                out[index] = Float(Int16(littleEndian: samples[index])) / 32_768.0
             }
         }
         return buffer

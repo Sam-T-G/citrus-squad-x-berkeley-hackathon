@@ -48,6 +48,18 @@ final class DepthService: NSObject {
     /// Gate for the camera tier, toggled off the main actor by the thermal degrade ladder.
     @ObservationIgnored nonisolated(unsafe) var visionEnabled = true
 
+    /// Final-approach anchor scanner (the last-50-feet wedge). Confined to the perception queue, the
+    /// same as `personDetector`. See `Approach/` and `ios/LAST-50-FEET-SCOPING.md`.
+    private let anchorSource: AbsoluteAnchorSource = BarcodeAnchorSource()
+
+    /// Gate for the barcode anchor scan, set from the main actor when an approach starts. Off by
+    /// default, so the scan costs nothing until a final approach is active, and it also rides the
+    /// `visionEnabled` thermal gate, so it sheds under heat with the rest of the camera tier.
+    @ObservationIgnored nonisolated(unsafe) var anchorScanning = false
+
+    /// Where decoded anchor sightings go. Set once by `AppModel.attachVision`.
+    private weak var anchorStore: AnchorStore?
+
     /// Where a resolved person cue and the overlay boxes go. Set once by `AppModel.attachVision`.
     private weak var visionSink: VisionHazardSource?
     private weak var detectionStore: DetectionStore?
@@ -78,6 +90,19 @@ final class DepthService: NSObject {
     /// rear camera.
     private(set) var previewImage: CGImage?
 
+    /// The latest higher-resolution upright frame, kept for the pull-based Claude vision read ("what's
+    /// around me", "read that sign"). Refreshed at ~2 Hz from the same ARSession, so there is no second
+    /// capture session contending for the rear camera. Nil when depth is not running. The read encodes
+    /// this to JPEG on demand, so most frames cost only the cache, never an encode. See `ClaudeClient`
+    /// and `AI-USAGE-AUDIT-AND-EXPANSION.md`.
+    private(set) var latestVisionFrame: CGImage?
+
+    /// The latest depth-fused scene: every object the detector saw this frame, with its LiDAR distance
+    /// and side. This is what lets the Claude tier describe the whole scene (what is in each band and
+    /// how close) instead of just the single nearest hazard. Empty when the detector found nothing or
+    /// the camera tier is off. Read on the main actor by the `PerceptionSnapshot` builder.
+    private(set) var sceneDetections: [PersonDetection] = []
+
     /// CIContext is documented thread-safe for rendering, so the perception queue uses it directly.
     nonisolated(unsafe) private let ciContext = CIContext(options: nil)
 
@@ -101,12 +126,14 @@ final class DepthService: NSObject {
         session.delegateQueue = perceptionQueue
     }
 
-    /// Wire the person tier to its sink, the demo overlay, and the early-warning surface. Called once
-    /// by `AppModel`.
-    func attachVision(sink: VisionHazardSource, store: DetectionStore, interference: InterferenceStore) {
+    /// Wire the person tier to its sink, the demo overlay, the early-warning surface, and the
+    /// final-approach anchor store. Called once by `AppModel`.
+    func attachVision(sink: VisionHazardSource, store: DetectionStore,
+                      interference: InterferenceStore, anchors: AnchorStore) {
         visionSink = sink
         detectionStore = store
         interferenceStore = interference
+        anchorStore = anchors
     }
 
     func start() {
@@ -124,6 +151,23 @@ final class DepthService: NSObject {
         session.pause()
         isRunning = false
         previewImage = nil
+        latestVisionFrame = nil
+        sceneDetections = []
+        anchorScanning = false
+    }
+
+    /// Encode the latest cached frame to JPEG for a Claude vision call. Main-actor and on demand, so
+    /// the encode happens only when the wearer asks, never on the perception queue. Nil when no frame
+    /// is cached (camera off). 1280 px long edge keeps small text legible while bounding tokens.
+    func grabFrameJPEG(quality: Double = 0.7) -> Data? {
+        guard let image = latestVisionFrame else { return nil }
+        let data = NSMutableData()
+        guard let destination = CGImageDestinationCreateWithData(data, "public.jpeg" as CFString, 1, nil)
+        else { return nil }
+        CGImageDestinationAddImage(destination, image,
+                                   [kCGImageDestinationLossyCompressionQuality: quality] as CFDictionary)
+        guard CGImageDestinationFinalize(destination) else { return nil }
+        return data as Data
     }
 }
 
@@ -134,12 +178,30 @@ extension DepthService: ARSessionDelegate {
         let sampled = Self.bandedNearest(in: depth)
         Task { @MainActor in self.bands = sampled }
 
+        // Final-approach anchor scan: a real barcode detection branch on the RGB frame (not the
+        // ~0.3 Hz preview cache). Runs only during an active approach and rides the visionEnabled
+        // thermal gate, so it is free on the common path and sheds under heat with the camera tier.
+        // Distance comes from the LiDAR band the marker sits in, never a vision guess.
+        if visionEnabled, anchorScanning, frameTick % CitrusSquadConfig.anchorScanFrameDivisor == 0 {
+            let sightings = Self.fillAnchorDistances(
+                anchorSource.detect(in: frame.capturedImage, orientation: Self.cameraOrientation),
+                bands: sampled)
+            Task { @MainActor in self.anchorStore?.update(sightings) }
+        }
+
         // Publish a downscaled preview from the same frame so the demo shows the camera, LiDAR, and
         // the detector from one session. Throttled below the band rate; it is cosmetic, so it is the
         // first thing to shed under load.
         if frameTick % 12 == 0, let cg = Self.previewImage(from: frame.capturedImage, context: ciContext) {
             let wrapped = SendableImage(image: cg)
             Task { @MainActor in self.previewImage = wrapped.image }
+        }
+
+        // Keep a higher-resolution frame for the pull-based Claude vision read, slower than the preview
+        // because nothing consumes it until the wearer asks. Same frame, no second camera session.
+        if frameTick % 30 == 0, let cg = Self.visionImage(from: frame.capturedImage, context: ciContext) {
+            let wrapped = SendableImage(image: cg)
+            Task { @MainActor in self.latestVisionFrame = wrapped.image }
         }
 
         // Person tier off the same frame: RGB for YOLO, this depth map for fusion. process() throttles
@@ -156,6 +218,10 @@ extension DepthService: ARSessionDelegate {
     /// Push the gated person cue and the overlay boxes to the main actor. `.hold` leaves the cue
     /// exactly as the last tick set it.
     @MainActor private func applyVision(_ result: PersonFrameResult) {
+        // The full depth-fused scene for the Claude describe tier. Self-clears each frame (empty when
+        // nothing is detected), so a stale object label cannot linger while the detector is running.
+        sceneDetections = result.scene
+
         switch result.action {
         case .report(let side, let distance):
             // The wire event stays vision-danger for any close navigation-class object, but carry the
@@ -225,8 +291,14 @@ extension DepthService: ARSessionDelegate {
         func meters(_ value: Float) -> Double {
             value == .greatestFiniteMagnitude ? -1 : Double(value)
         }
-        // band 0 = scene right, band 2 = scene left. If a live test shows them mirrored, swap these.
-        return BandDepths(left: meters(smallest[2]), center: meters(smallest[1]), right: meters(smallest[0]))
+        // band 0 and band 2 are the scene's two edges; which one is the wearer's left is the one
+        // unverified runtime unknown, so it lives behind a single flag (`lidarBandsMirrored`) with an
+        // on-device verification note, not a buried pair of swapped indices. Default maps band 2 to
+        // left; flip the flag if a live "hard left" test reports the wrong side.
+        let leftIndex = CitrusSquadConfig.lidarBandsMirrored ? 0 : 2
+        let rightIndex = CitrusSquadConfig.lidarBandsMirrored ? 2 : 0
+        return BandDepths(left: meters(smallest[leftIndex]), center: meters(smallest[1]),
+                          right: meters(smallest[rightIndex]))
     }
 
     /// A downscaled, upright CGImage from the AR frame's RGB buffer for the demo preview. Oriented
@@ -236,6 +308,36 @@ extension DepthService: ARSessionDelegate {
         guard oriented.extent.width > 0 else { return nil }
         let scale = 480.0 / oriented.extent.width
         let scaled = oriented.transformed(by: CGAffineTransform(scaleX: scale, y: scale))
+        return context.createCGImage(scaled, from: scaled.extent)
+    }
+
+    /// Fill each anchor sighting's distance from the LiDAR band it sits in: a coarse but drift-free
+    /// figure, since the marker decode is instantaneous and the depth at its band is ground truth.
+    /// Vision never supplies the distance. The band is chosen by the same horizontal thirds as the
+    /// sighting's bearing, so the two stay internally consistent. This couples the Vision upright frame
+    /// (the centroid) to the mirror-resolved LiDAR bands, which agree on left/right only once both are
+    /// calibrated to the wearer; the on-device "hard left" check must confirm both, not just the LiDAR
+    /// side. Distance stays nil-safe when the chosen band has no return.
+    nonisolated static func fillAnchorDistances(_ sightings: [AnchorSighting],
+                                                bands: BandDepths) -> [AnchorSighting] {
+        sightings.map { sighting in
+            var sighting = sighting
+            let banded = sighting.centroidX < 0.34 ? bands.left
+                : (sighting.centroidX > 0.66 ? bands.right : bands.center)
+            sighting.distanceMeters = banded > 0 ? banded : nil
+            return sighting
+        }
+    }
+
+    /// An upright, higher-resolution CGImage for the Claude vision read. Same orientation as the
+    /// preview and the detector. Scaled so the long edge is at most 1280 px: enough to read a street
+    /// sign or bus number, small enough to keep the request light. Nil if the buffer is empty.
+    nonisolated static func visionImage(from pixelBuffer: CVPixelBuffer, context: CIContext) -> CGImage? {
+        let oriented = CIImage(cvPixelBuffer: pixelBuffer).oriented(cameraOrientation)
+        let longEdge = max(oriented.extent.width, oriented.extent.height)
+        guard longEdge > 0 else { return nil }
+        let scale = min(1.0, 1280.0 / longEdge)
+        let scaled = scale < 1 ? oriented.transformed(by: CGAffineTransform(scaleX: scale, y: scale)) : oriented
         return context.createCGImage(scaled, from: scaled.extent)
     }
 }

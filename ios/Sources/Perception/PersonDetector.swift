@@ -64,13 +64,18 @@ struct ProcessConfig: Sendable {
                          refractory: CitrusSquadConfig.visionRefractorySeconds))
 }
 
-/// Result of processing one frame: what to do with the cue, plus the boxes for the demo overlay.
+/// Result of processing one frame: what to do with the cue, the boxes for the demo overlay, and the
+/// full depth-fused scene for the Claude tier.
 struct PersonFrameResult: Sendable {
     var action: PersonAction
     /// Normalized top-left boxes for `DetectionStore` to draw over the preview.
     var overlay: [Detection]
     /// The nearest person this frame, for the diagnostics console. Nil when none.
     var best: PersonDetection?
+    /// Every detection this frame with its LiDAR-fused depth and horizontal position. This is the rich
+    /// CV-plus-LiDAR scene the `PerceptionSnapshot` hands to Claude so it can describe the whole frame
+    /// (what is in each band and how close), not just the single nearest hazard.
+    var scene: [PersonDetection]
 }
 
 /// Runs YOLOv8n (via CoreML + Vision) on the ARKit RGB frame, fuses the box with the LiDAR depth
@@ -106,7 +111,7 @@ final class PersonDetector: @unchecked Sendable {
         guard let model else {
             // No model bundled yet (Cole's CoreML export is the P0 dependency). Never fire; keep the
             // gate's clear path alive so a stale cue cannot stick.
-            return advance(distance: -1, side: .front, now: now, config: config, overlay: [], best: nil)
+            return advance(distance: -1, side: .front, now: now, config: config, overlay: [], best: nil, scene: [])
         }
 
         let request = VNCoreMLRequest(model: model)
@@ -116,7 +121,7 @@ final class PersonDetector: @unchecked Sendable {
             try handler.perform([request])
         } catch {
             log.error("vision request failed: \(error.localizedDescription, privacy: .public)")
-            return advance(distance: -1, side: .front, now: now, config: config, overlay: [], best: nil)
+            return advance(distance: -1, side: .front, now: now, config: config, overlay: [], best: nil, scene: [])
         }
 
         let observations = (request.results as? [VNRecognizedObjectObservation]) ?? []
@@ -149,15 +154,16 @@ final class PersonDetector: @unchecked Sendable {
 
         let distance = best?.depthMinMeters ?? -1
         let side = best.map { PersonFusion.quadrant(horizontalNorm: $0.horizontalNorm) } ?? .front
-        return advance(distance: distance, side: side, now: now, config: config, overlay: overlay, best: best)
+        return advance(distance: distance, side: side, now: now, config: config,
+                       overlay: overlay, best: best, scene: people)
     }
 
     private func advance(distance: Double, side: QuadrantMask, now: Double,
                          config: ProcessConfig, overlay: [Detection],
-                         best: PersonDetection?) -> PersonFrameResult {
+                         best: PersonDetection?, scene: [PersonDetection]) -> PersonFrameResult {
         let (action, next) = Self.decide(distance: distance, side: side, gate: gate, now: now, cfg: config.gate)
         gate = next
-        return PersonFrameResult(action: action, overlay: overlay, best: best)
+        return PersonFrameResult(action: action, overlay: overlay, best: best, scene: scene)
     }
 
     /// The navigation-class label for an observation, or nil to ignore it. Replaces the person-only

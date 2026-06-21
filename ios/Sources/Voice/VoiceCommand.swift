@@ -5,13 +5,21 @@ import Foundation
 enum VoiceCommand: Sendable, Equatable {
     case setDestination(String)
     case routeStatus
+    case nextTurn
+    case tripSummary
     case whereAmI
     case describeSurroundings
+    case checkPath
+    case readSign
+    case locateEntrance
     case recalibrate
+    case connectBelt
+    case disconnectBelt
     case stop
-    /// A function the agent named that we cannot serve right now. The camera tools live here
-    /// because the rear camera is exclusive with the ARKit LiDAR that runs the safety reflex
-    /// (see `CameraService`), so they stay off while the belt is guiding.
+    /// The catch-all for a function name we do not recognize, so the agent always gets a clean spoken
+    /// answer instead of an error. The camera tools (`read_sign`, `locate_entrance`) are now served:
+    /// the Claude vision read shares the one ARSession frame, so it never needs a second camera session
+    /// away from the LiDAR reflex.
     case unavailable(String)
 
     /// Map a Deepgram function name and its decoded string arguments to a command. An unknown name
@@ -22,12 +30,26 @@ enum VoiceCommand: Sendable, Equatable {
             self = .setDestination(arguments["place"] ?? "")
         case VoiceFunction.routeStatus.name:
             self = .routeStatus
+        case VoiceFunction.nextTurn.name:
+            self = .nextTurn
+        case VoiceFunction.tripSummary.name:
+            self = .tripSummary
         case VoiceFunction.whereAmI.name:
             self = .whereAmI
         case VoiceFunction.describeSurroundings.name:
             self = .describeSurroundings
+        case VoiceFunction.checkPath.name:
+            self = .checkPath
+        case VoiceFunction.readSign.name:
+            self = .readSign
+        case VoiceFunction.locateEntrance.name:
+            self = .locateEntrance
         case VoiceFunction.recalibrate.name:
             self = .recalibrate
+        case VoiceFunction.connectBelt.name:
+            self = .connectBelt
+        case VoiceFunction.disconnectBelt.name:
+            self = .disconnectBelt
         case VoiceFunction.stop.name:
             self = .stop
         default:
@@ -43,18 +65,32 @@ enum VoiceCommand: Sendable, Equatable {
 enum VoiceFunction: String, CaseIterable, Sendable {
     case setDestination
     case routeStatus
+    case nextTurn
+    case tripSummary
     case whereAmI
     case describeSurroundings
+    case checkPath
+    case readSign
+    case locateEntrance
     case recalibrate
+    case connectBelt
+    case disconnectBelt
     case stop
 
     var name: String {
         switch self {
         case .setDestination: return "set_destination"
         case .routeStatus: return "route_status"
+        case .nextTurn: return "next_turn"
+        case .tripSummary: return "trip_summary"
         case .whereAmI: return "where_am_i"
         case .describeSurroundings: return "describe_surroundings"
+        case .checkPath: return "check_path"
+        case .readSign: return "read_sign"
+        case .locateEntrance: return "locate_entrance"
         case .recalibrate: return "recalibrate"
+        case .connectBelt: return "connect_belt"
+        case .disconnectBelt: return "disconnect_belt"
         case .stop: return "stop"
         }
     }
@@ -63,9 +99,16 @@ enum VoiceFunction: String, CaseIterable, Sendable {
         switch self {
         case .setDestination: return "Start walking navigation to a place the wearer names."
         case .routeStatus: return "Report distance to the next turn and how many turns remain."
+        case .nextTurn: return "Give a heads-up about the next turn: which way it is and how far ahead in feet, like \"you'll make a left turn in about 100 feet.\" Use when the wearer asks what's coming up or which way to turn."
+        case .tripSummary: return "Report how far the wearer still has to the destination and a rough walking time, in feet or miles."
         case .whereAmI: return "Report the wearer's current location as a nearby place or address."
         case .describeSurroundings: return "Describe what is ahead, prioritized for a walker."
+        case .checkPath: return "Describe whether a person or object is in the wearer's walking path and which side looks more open, so the wearer can decide how to move. Speak the returned sentence as given; it describes the situation and does not command a step or a stop, because the wearer and their cane make that call. Call it when the wearer asks if the way is clear, if something is in front of them, or what is around an obstacle. It is advisory context from the phone's depth sensor, not a safety instruction."
+        case .readSign: return "Read a sign, label, number, or other printed text the wearer points the camera at, and say it back. Call it when the wearer asks you to read something, what a sign says, a store name, a bus number, a street name, or an address. It grabs one camera frame and reads it; it is informational only and never a navigation instruction."
+        case .locateEntrance: return "Look through the camera for a building entrance or door and say roughly where it is. Call it when the wearer asks where the entrance, the door, or the way in is. It grabs one camera frame and looks; it is informational only and never a navigation instruction."
         case .recalibrate: return "Recapture the forward-facing heading offset."
+        case .connectBelt: return "Connect to the haptic belt so it can start tapping cues."
+        case .disconnectBelt: return "Disconnect from the haptic belt."
         case .stop: return "Stop navigation and guidance now."
         }
     }

@@ -26,6 +26,8 @@
 	<string>$(DEEPGRAM_API_KEY)</string>
 	<key>NSCameraUsageDescription</key>
 	<string>CitrusSquad uses the LiDAR depth camera to sense nearby obstacles.</string>
+	<key>NSLocalNetworkUsageDescription</key>
+	<string>CitrusSquad sends belt cues over the local network to the haptic belt link.</string>
 	<key>NSLocationWhenInUseUsageDescription</key>
 	<string>CitrusSquad reads heading and GPS to compute which way to turn.</string>
 	<key>NSMicrophoneUsageDescription</key>

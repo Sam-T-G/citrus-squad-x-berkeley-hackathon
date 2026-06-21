@@ -1,16 +1,15 @@
 // Citrus Squad belt firmware (Arduino + Adafruit PCA9685), USB-tethered fallback path.
 //
-// Original sketch by Angelo (the `arduino` branch). This is the firmware the belt-bridge
-// server (`server/app.py`) drives over USB serial when there is no ESP32 / Wi-Fi module.
+// By Angelo (the `arduino` branch). This is the firmware the belt-bridge server
+// (`server/app.py`) drives over USB serial when there is no ESP32 / Wi-Fi module.
 //
-// Protocol: the server sends ONE ASCII command byte per cue, at 9600 baud:
-//   's' = stop / hazard buzz   (all servos)
-//   'l' = turn left  (double-tap on the Left servo)
-//   'r' = turn right (double-tap on the Right servo)
-//   'f' = go straight (double-tap on the Front servo)
-// The server only sends a byte when the cue CHANGES, so the one-shot patterns below are
-// not re-triggered by the phone's 10 Hz heartbeat. Anything else (idle) sends nothing and
-// the belt falls quiet on its own. See server/README.md for the LC2 -> command mapping.
+// Protocol: the server sends ONE newline-terminated word per cue, at 9600 baud:
+//   forward | stop | left | right | rotate_left | rotate_right | u_turn | idle
+//   low_battery (alias: error)  -- finite 3-tap alert, self-returns to idle
+// Most commands latch a CONTINUOUS pulse pattern that runs until the next command, so
+// "idle" is what stops the belt; the server sends it when a cue clears and on link
+// silence. `low_battery` is finite (no LC2 source today; manual/firmware test only).
+// See server/README.md for the LC2 -> command mapping.
 
 #include <Wire.h>
 #include <Adafruit_PWMServoDriver.h>
@@ -19,8 +18,7 @@ Adafruit_PWMServoDriver pwm = Adafruit_PWMServoDriver();
 
 #define NUM_SERVOS 4
 #define SERVO_MIN 100
-#define SERVO_MID 300
-#define SERVO_MAX 600
+#define SERVO_MAX 300
 
 // Map your servos to specific positions for clarity
 const int PIN_FRONT = 0;
@@ -31,12 +29,30 @@ const int PIN_LEFT  = 3;
 int servoPins[NUM_SERVOS] = {PIN_FRONT, PIN_RIGHT, PIN_BACK, PIN_LEFT};
 
 // --- STATE MACHINE VARIABLES ---
-enum HapticState { IDLE, STOP_PATTERN, LEFT_TURN_PATTERN, RIGHT_TURN_PATTERN, FORWARD_PATTERN };
+enum HapticState { 
+  IDLE, 
+  FORWARD, 
+  STOP, 
+  TURN_LEFT, 
+  TURN_RIGHT, 
+  ROTATE_LEFT, 
+  ROTATE_RIGHT,
+  U_TURN,          
+  LOW_BATTERY      
+};
+
 HapticState currentState = IDLE;
 
 unsigned long previousMillis = 0;
-unsigned long currentInterval = 0;
-int patternStep = 0;
+unsigned long currentInterval = 0; 
+bool isPulseOn = false; 
+
+// Tracks how many taps have occurred for finite patterns
+int tapCounter = 0; 
+
+// The timing for ALL taps across the system
+const int PULSE_ON_TIME = 150;  
+const int PULSE_OFF_TIME = 250; 
 
 void setup() {
   Serial.begin(9600);
@@ -45,69 +61,82 @@ void setup() {
   pwm.begin();
   pwm.setPWMFreq(50);
 
-  // Initialize all servos to min
-  setAllServos(SERVO_MIN);
+  // Initialize all servos to the minimum position smoothly
+  retractAllServosSmoothly();
 }
 
 void loop() {
-  // Update the servos without blocking the rest of your code
+  // 1. Check for incoming commands from the Google Maps API
+  checkSerialCommands();
+
+  // 2. Update the servos without blocking the code
   updateHaptics();
+}
 
-  // The belt-bridge server sends one command byte per cue change.
+// --- SERIAL COMMUNICATION ---
+
+void checkSerialCommands() {
   if (Serial.available() > 0) {
-    char cmd = Serial.read();
-    if (cmd == 's') triggerStopPattern();
-    if (cmd == 'l') triggerLeftTurn();
-    if (cmd == 'r') triggerRightTurn();
-    if (cmd == 'f') triggerForward();
+    // Read the incoming string until a newline character
+    String cmd = Serial.readStringUntil('\n');
+    cmd.trim(); 
+
+    if (cmd.length() > 0) {
+      Serial.print("Received command: [");
+      Serial.print(cmd);
+      Serial.println("]");
+    }
+
+    // Route the command to the correct trigger function
+    if (cmd == "forward") triggerPattern(FORWARD);
+    else if (cmd == "stop") triggerPattern(STOP);
+    else if (cmd == "left") triggerPattern(TURN_LEFT);
+    else if (cmd == "right") triggerPattern(TURN_RIGHT);
+    else if (cmd == "rotate_left") triggerPattern(ROTATE_LEFT);
+    else if (cmd == "rotate_right") triggerPattern(ROTATE_RIGHT);
+    else if (cmd == "u_turn") triggerPattern(U_TURN);
+    else if (cmd == "low_battery" || cmd == "error") triggerPattern(LOW_BATTERY);
+    else if (cmd == "idle") triggerPattern(IDLE);
+    else if (cmd.length() > 0) Serial.println("-> ERROR: Command not recognized.");
   }
 }
 
-// --- HELPER FUNCTIONS ---
+// --- TRIGGER FUNCTION ---
 
-void setAllServos(int position) {
-  for(int i = 0; i < NUM_SERVOS; i++){
-    pwm.setPWM(servoPins[i], 0, position);
+// This function safely transitions between states
+void triggerPattern(HapticState newState) {
+  if (currentState != newState) {
+    Serial.println("-> State Changed");
+    currentState = newState;
+    isPulseOn = false;       
+    currentInterval = 0;     
+    tapCounter = 0;             // Reset the tap counter for the new state
+    retractAllServosSmoothly(); 
   }
 }
 
-// --- TRIGGER FUNCTIONS ---
-// Call these to kick off a specific sequence
+// --- SMOOTH MOVEMENT HELPER FUNCTIONS ---
 
-void triggerStopPattern() {
-  if (currentState != STOP_PATTERN) {
-    currentState = STOP_PATTERN;
-    patternStep = 0;
-    currentInterval = 0; // Trigger immediately
+void extendServosSmoothly(bool front, bool right, bool back, bool left) {
+  for(int pos = SERVO_MIN; pos <= SERVO_MAX; pos += 20) {
+    if(front) pwm.setPWM(PIN_FRONT, 0, pos);
+    if(right) pwm.setPWM(PIN_RIGHT, 0, pos);
+    if(back)  pwm.setPWM(PIN_BACK, 0, pos);
+    if(left)  pwm.setPWM(PIN_LEFT, 0, pos);
+    delay(2); 
   }
 }
 
-void triggerLeftTurn() {
-  if (currentState != LEFT_TURN_PATTERN) {
-    currentState = LEFT_TURN_PATTERN;
-    patternStep = 0;
-    currentInterval = 0;
-  }
-}
-
-void triggerRightTurn() {
-  if (currentState != RIGHT_TURN_PATTERN) {
-    currentState = RIGHT_TURN_PATTERN;
-    patternStep = 0;
-    currentInterval = 0;
-  }
-}
-
-void triggerForward() {
-  if (currentState != FORWARD_PATTERN) {
-    currentState = FORWARD_PATTERN;
-    patternStep = 0;
-    currentInterval = 0;
+void retractAllServosSmoothly() {
+  for(int pos = SERVO_MAX; pos >= SERVO_MIN; pos -= 20) {
+    for(int i = 0; i < NUM_SERVOS; i++) {
+      pwm.setPWM(servoPins[i], 0, pos);
+    }
+    delay(2);
   }
 }
 
 // --- THE STATE MACHINE ---
-// This runs constantly in the loop, checking if it's time to move a servo
 
 void updateHaptics() {
   unsigned long currentMillis = millis();
@@ -120,97 +149,65 @@ void updateHaptics() {
   // Update the timer
   previousMillis = currentMillis;
 
-  // Handle the active pattern
+  // If we are idle, do nothing
+  if (currentState == IDLE) {
+    return;
+  }
+
+  // Toggle the pulse state (ON to OFF, or OFF to ON)
+  isPulseOn = !isPulseOn; 
+  
+  // Set the duration for the next cycle (Now identical for all commands)
+  currentInterval = isPulseOn ? PULSE_ON_TIME : PULSE_OFF_TIME;
+
+  // If it's the "OFF" phase of the pulse, retract everything smoothly
+  if (!isPulseOn) {
+    retractAllServosSmoothly();
+    
+    // Check if we just completed a tap during a finite state
+    if (currentState == LOW_BATTERY) {
+      tapCounter++;
+      // If we have completed 3 standard taps, automatically switch back to IDLE
+      if (tapCounter >= 3) {
+        Serial.println("-> Alert Complete. Returning to IDLE.");
+        triggerPattern(IDLE);
+      }
+    }
+    return;
+  }
+
+  // If it's the "ON" phase of the pulse, sweep the correct servos forward smoothly
   switch (currentState) {
-
-    case IDLE:
-      // Do nothing
+    case FORWARD:
+      extendServosSmoothly(true, false, false, false);
       break;
-
-    // ----------------------------------------------------
-    // Your original stop() function, converted to millis()
-    // ----------------------------------------------------
-    case STOP_PATTERN:
-      if (patternStep == 0) {
-        setAllServos(SERVO_MIN);
-        currentInterval = 800;
-        patternStep++;
-      }
-      else if (patternStep == 1) {
-        setAllServos(SERVO_MID);
-        currentInterval = 800;
-        patternStep++;
-      }
-      else if (patternStep == 2) {
-        setAllServos(SERVO_MIN);
-        currentState = IDLE; // Sequence finished
-      }
+      
+    case STOP:
+      extendServosSmoothly(true, true, true, true);
       break;
-
-    // ----------------------------------------------------
-    // Double-tap left sequence
-    // ----------------------------------------------------
-    case LEFT_TURN_PATTERN:
-      if (patternStep == 0) {
-        pwm.setPWM(PIN_LEFT, 0, SERVO_MAX); // Tap 1
-        currentInterval = 150;
-        patternStep++;
-      } else if (patternStep == 1) {
-        pwm.setPWM(PIN_LEFT, 0, SERVO_MIN); // Release 1
-        currentInterval = 100;
-        patternStep++;
-      } else if (patternStep == 2) {
-        pwm.setPWM(PIN_LEFT, 0, SERVO_MAX); // Tap 2
-        currentInterval = 150;
-        patternStep++;
-      } else if (patternStep == 3) {
-        pwm.setPWM(PIN_LEFT, 0, SERVO_MIN); // Release 2
-        currentState = IDLE;
-      }
+      
+    case TURN_LEFT:
+      extendServosSmoothly(true, false, false, true);
       break;
-
-    // ----------------------------------------------------
-    // Double-tap right sequence
-    // ----------------------------------------------------
-    case RIGHT_TURN_PATTERN:
-      if (patternStep == 0) {
-        pwm.setPWM(PIN_RIGHT, 0, SERVO_MAX); // Tap 1
-        currentInterval = 150;
-        patternStep++;
-      } else if (patternStep == 1) {
-        pwm.setPWM(PIN_RIGHT, 0, SERVO_MIN); // Release 1
-        currentInterval = 100;
-        patternStep++;
-      } else if (patternStep == 2) {
-        pwm.setPWM(PIN_RIGHT, 0, SERVO_MAX); // Tap 2
-        currentInterval = 150;
-        patternStep++;
-      } else if (patternStep == 3) {
-        pwm.setPWM(PIN_RIGHT, 0, SERVO_MIN); // Release 2
-        currentState = IDLE;
-      }
+      
+    case TURN_RIGHT:
+      extendServosSmoothly(true, true, false, false);
       break;
-
-    // ----------------------------------------------------
-    // Double-tap FRONT sequence (Go Straight)
-    // ----------------------------------------------------
-    case FORWARD_PATTERN:
-      if (patternStep == 0) {
-        pwm.setPWM(PIN_FRONT, 0, SERVO_MAX); // Tap 1
-        currentInterval = 150;
-        patternStep++;
-      } else if (patternStep == 1) {
-        pwm.setPWM(PIN_FRONT, 0, SERVO_MIN); // Release 1
-        currentInterval = 100;
-        patternStep++;
-      } else if (patternStep == 2) {
-        pwm.setPWM(PIN_FRONT, 0, SERVO_MAX); // Tap 2
-        currentInterval = 150;
-        patternStep++;
-      } else if (patternStep == 3) {
-        pwm.setPWM(PIN_FRONT, 0, SERVO_MIN); // Release 2
-        currentState = IDLE;                 // Sequence finished
-      }
+      
+    case ROTATE_LEFT:
+      extendServosSmoothly(false, false, false, true);
+      break;
+      
+    case ROTATE_RIGHT:
+      extendServosSmoothly(false, true, false, false);
+      break;
+      
+    case U_TURN:
+      extendServosSmoothly(false, false, true, false);
+      break;
+      
+    case LOW_BATTERY:
+      extendServosSmoothly(false, false, true, false);
       break;
   }
 }

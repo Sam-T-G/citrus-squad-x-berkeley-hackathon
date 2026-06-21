@@ -1,0 +1,24 @@
+# Fly.io config for the belt relay (internet fallback). Deploys relay.py only.
+# Fly terminates WSS on 443 at its edge and proxies to the internal port, so the phone
+# and laptop both connect over wss://<app>.fly.dev, which any network leaves open.
+#
+#   cd server
+#   fly launch --no-deploy        # first time: creates the app, pick a region near you (sjc)
+#   fly secrets set RELAY_TOKEN=somesecret   # optional shared secret for both ends
+#   fly deploy
+#
+# Then point the phone at wss://<app>.fly.dev/send and run:
+#   RELAY_URL=wss://<app>.fly.dev/recv python relay_client.py
+
+app = "citrus-squad-belt-relay"
+primary_region = "sjc"
+
+[build]
+  dockerfile = "Dockerfile.relay"
+
+[http_service]
+  internal_port = 8090
+  force_https = true
+  auto_stop_machines = false
+  auto_start_machines = true
+  min_machines_running = 1

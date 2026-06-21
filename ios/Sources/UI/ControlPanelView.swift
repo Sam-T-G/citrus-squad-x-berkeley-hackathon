@@ -16,18 +16,21 @@ struct ControlPanelView: View {
         ScrollView {
             VStack(spacing: 16) {
                 header
-                linkCard(host: $model.espHost, port: $model.espPort)
+                linkCard(host: $model.espHost, port: $model.espPort,
+                         useCloud: $model.beltUseCloud, relayURL: $model.relayURL)
                 navigationCard(apiKey: $model.directionsAPIKey,
                                origin: $model.originText,
                                destination: $model.destinationText,
                                mode: $model.mode,
                                audioEnabled: $audio.isEnabled)
                 navCard(bearing: $route.targetRouteBearing)
+                NavTuningCard(model: model)
                 headingCard
                 gpsCard
                 depthCard(obstacleEnabled: $model.obstacleCuesEnabled,
                           earlyWarningEnabled: $model.earlyWarningCuesEnabled)
                 avoidanceCard
+                anchorsCard
                 eventLogCard
                 motionCard
                 soakCard
@@ -49,6 +52,35 @@ struct ControlPanelView: View {
             Text("A band reads its nearest return within threshold. Both sides blocked → stop; one side blocked → steer to the other; else steer to the roomier side.")
                 .font(.caption2)
                 .foregroundStyle(.secondary)
+        }
+    }
+
+    // MARK: - Anchors (last-50-feet detection foundation)
+
+    private var anchorsCard: some View {
+        Card(title: "Anchors (last-50-feet)", status: model.depth.anchorScanning ? .pass : .pending) {
+            HStack {
+                Button(model.anchorScanDiagnostic ? "Stop scan" : "Scan markers") {
+                    model.toggleAnchorScanDiagnostic()
+                }
+                .buttonStyle(.borderedProminent)
+                Spacer()
+                Text(model.depth.anchorScanning ? "scanning" : "off")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+            if model.anchors.sightings.isEmpty {
+                Text(model.anchorScanDiagnostic
+                     ? "No coded marker in view. Start the camera and point it at a printed QR / Aztec / DataMatrix sticker."
+                     : "Decodes printed coded stickers on-device to verify the detection layer.")
+                    .font(.caption2).foregroundStyle(.secondary)
+            } else {
+                ForEach(model.anchors.sightings) { sighting in
+                    LabeledRow(sighting.payload,
+                               sighting.bearing.rawValue + (sighting.distanceMeters.map { String(format: ", %.1f m", $0) } ?? ""))
+                }
+            }
+            Text("Detection foundation for the last-50-feet final approach; the guidance beacon is deferred to blind co-design. See ios/LAST-50-FEET-SCOPING.md.")
+                .font(.caption2).foregroundStyle(.secondary)
         }
     }
 
@@ -91,19 +123,35 @@ struct ControlPanelView: View {
 
     // MARK: - Link
 
-    private func linkCard(host: Binding<String>, port: Binding<UInt16>) -> some View {
-        Card(title: "Belt link (LC2 / UDP)", status: linkStatus) {
-            HStack {
-                TextField("ESP32 host", text: host)
+    private func linkCard(host: Binding<String>, port: Binding<UInt16>,
+                          useCloud: Binding<Bool>, relayURL: Binding<String>) -> some View {
+        Card(title: "Belt link (LC2)", status: linkStatus) {
+            Picker("Transport", selection: useCloud) {
+                Text("Local (UDP)").tag(false)
+                Text("Cloud (relay)").tag(true)
+            }
+            .pickerStyle(.segmented)
+            .disabled(model.transmitting)
+
+            if useCloud.wrappedValue {
+                TextField("Relay URL (wss://.../send)", text: relayURL)
                     .textFieldStyle(.roundedBorder)
                     .autocorrectionDisabled()
                     .textInputAutocapitalization(.never)
                     .disabled(model.transmitting)
-                TextField("port", value: port, format: .number.grouping(.never))
-                    .textFieldStyle(.roundedBorder)
-                    .frame(width: 80)
-                    .keyboardType(.numberPad)
-                    .disabled(model.transmitting)
+            } else {
+                HStack {
+                    TextField("Belt host (laptop or ESP32)", text: host)
+                        .textFieldStyle(.roundedBorder)
+                        .autocorrectionDisabled()
+                        .textInputAutocapitalization(.never)
+                        .disabled(model.transmitting)
+                    TextField("port", value: port, format: .number.grouping(.never))
+                        .textFieldStyle(.roundedBorder)
+                        .frame(width: 80)
+                        .keyboardType(.numberPad)
+                        .disabled(model.transmitting)
+                }
             }
             LabeledRow("State", model.link.connectionState)
             LabeledRow("Packets sent", "\(model.link.packetsSent)")
@@ -247,6 +295,11 @@ struct ControlPanelView: View {
             LabeledRow("GPS course", model.location.course < 0 ? "—" : "\(format(model.location.course))°")
             LabeledRow("Speed", model.location.speed < 0 ? "—" : String(format: "%.1f m/s", model.location.speed))
             LabeledRow("Steering from", model.headingSource)
+            LabeledRow("Calibration", model.isHeadingCalibrated
+                ? "locked"
+                : "walk to calibrate (\(Int(model.calibrationProgress * 100))%)")
+            Button("Recalibrate heading") { model.recalibrateHeading() }
+                .buttonStyle(.bordered)
             if model.location.authorization == .notDetermined {
                 Button("Request location permission") { model.location.requestPermission() }
                     .buttonStyle(.borderedProminent)

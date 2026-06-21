@@ -59,6 +59,121 @@ struct QuadrantMapperTests {
     @Test func slightLeft() {
         #expect(QuadrantMapper.cue(forRelativeBearing: 320) == Cue(event: .turnSlight, mask: .left))
     }
+
+    // The bands tile the circle exactly, so the raw band at each boundary still matches the table.
+    @Test func bandBoundariesMatchTheTable() {
+        #expect(QuadrantMapper.band(forRelativeBearing: 9.9).cue == Cue(event: .forward, mask: .front))
+        #expect(QuadrantMapper.band(forRelativeBearing: 10).cue == Cue(event: .turnSlight, mask: .right))
+        #expect(QuadrantMapper.band(forRelativeBearing: 60).cue == Cue(event: .turnNow, mask: .right))
+        #expect(QuadrantMapper.band(forRelativeBearing: 350).cue == Cue(event: .forward, mask: .front))
+    }
+
+    // A widened band reaches past each boundary by the margin, with the Front band's wrap handled.
+    @Test func widenedBandCoversTheMargin() {
+        let front = QuadrantMapper.bands[0] // 350–10, widened by 5° becomes 345–15
+        #expect(front.contains(12, margin: 5))    // 2° past the 10° edge, inside the 5° margin
+        #expect(!front.contains(16, margin: 5))   // 6° past, outside it
+        #expect(front.contains(348, margin: 5))   // 2° below the 350° edge, inside the low margin
+        #expect(!front.contains(343, margin: 5))  // 7° below, outside it
+    }
+}
+
+/// The resistance on the route-following turn cue: heading jitter near a band boundary holds the
+/// current cue (hysteresis), and a new band must persist a few ticks before the belt switches to it
+/// (dwell). Replaying a bearing sequence makes the state machine deterministic to check.
+struct NavigationCueSmootherTests {
+    private func replay(_ bearings: [Double]) -> [Cue] {
+        var smoother = NavigationCueSmoother()
+        return bearings.map { smoother.update(relativeBearing: $0) }
+    }
+
+    private let front = Cue(event: .forward, mask: .front)
+    private let slightRight = Cue(event: .turnSlight, mask: .right)
+    private let sharpRight = Cue(event: .turnNow, mask: .right)
+    private let turnAround = Cue(event: .turnAround, mask: .rotate)
+
+    @Test func firstReadingCommitsImmediately() {
+        // No history, so the belt is correct from the first tick instead of holding a stale cue.
+        var smoother = NavigationCueSmoother()
+        #expect(smoother.update(relativeBearing: 90) == sharpRight)
+    }
+
+    @Test func jitterAcrossABoundaryHoldsTheCue() {
+        // Start on course, then dither a few degrees past the 10° boundary. Inside the deadband, so
+        // the belt stays on Front instead of flicking to a slight-right tap every frame.
+        let cues = replay([5, 11, 14, 8, 13])
+        #expect(cues.allSatisfy { $0 == front })
+    }
+
+    @Test func aSingleFrameSpikeDoesNotSwitch() {
+        // One frame jumps well past the deadband, then it is gone. Dwell swallows it.
+        let cues = replay([0, 90, 0])
+        #expect(cues == [front, front, front])
+    }
+
+    @Test func aSmallNudgeWaitsTheFullDwell() {
+        // Front to slight-right is one quadrant step (35° swing, under the 60° escalation line), so it
+        // stays on the slow dwell: commits only on the third tick past the deadband.
+        let cues = replay([0, 20, 20, 20])
+        #expect(cues[0] == front)        // on course
+        #expect(cues[1] == front)        // candidate, not yet committed
+        #expect(cues[2] == front)        // still pending (navCueDwellTicks = 3)
+        #expect(cues[3] == slightRight)  // full dwell satisfied
+    }
+
+    @Test func aRealTurnCommitsOnTheShorterDwell() {
+        // Front to sharp-right is a 90° swing, past the escalation line, so it takes agency and
+        // commits a tick sooner than the nudge above (navCueTurnDwellTicks = 2).
+        let cues = replay([0, 90, 90, 90])
+        #expect(cues[0] == front)        // on course
+        #expect(cues[1] == front)        // candidate, not yet committed
+        #expect(cues[2] == sharpRight)   // shorter dwell satisfied on tick two
+    }
+
+    @Test func aSharpSwingStillRejectsASingleFrameSpike() {
+        // A U-turn is the biggest swing, but the shorter dwell is floored at two ticks, so a one-frame
+        // spike to the rear band never reaches the belt.
+        let cues = replay([0, 180, 0])
+        #expect(cues == [front, front, front])
+    }
+
+    @Test func aSustainedUTurnCommitsAtTheFloor() {
+        // Held for two ticks, the U-turn commits.
+        let cues = replay([0, 180, 180])
+        #expect(cues[2] == turnAround)
+    }
+
+    @Test func liveTuningFeedsTheSmoother() {
+        // The smoother takes the knobs as parameters, so the live tuning card drives them. With a
+        // turn dwell of 1, a real turn commits on the first tick past the deadband instead of the
+        // second, proving the override reaches the smoother.
+        var smoother = NavigationCueSmoother()
+        _ = smoother.update(relativeBearing: 0, turnDwellTicks: 1)
+        let cue = smoother.update(relativeBearing: 90, turnDwellTicks: 1)
+        #expect(cue == sharpRight)
+    }
+}
+
+/// The live tolerance knobs start at the shipped defaults and reset back to them.
+@MainActor
+struct NavTuningTests {
+    @Test func defaultsMatchConfig() {
+        let tuning = NavTuning()
+        #expect(tuning.dwellTicks == CitrusSquadConfig.navCueDwellTicks)
+        #expect(tuning.turnDwellTicks == CitrusSquadConfig.navCueTurnDwellTicks)
+        #expect(tuning.escalationDegrees == CitrusSquadConfig.navCueEscalationDegrees)
+        #expect(tuning.adjacentMarginDegrees == CitrusSquadConfig.hysteresisAdjacentDegrees)
+        #expect(tuning.turnAroundMarginDegrees == CitrusSquadConfig.hysteresisTurnAroundDegrees)
+    }
+
+    @Test func resetRestoresDefaults() {
+        let tuning = NavTuning()
+        tuning.dwellTicks = 6
+        tuning.escalationDegrees = 120
+        tuning.reset()
+        #expect(tuning.dwellTicks == CitrusSquadConfig.navCueDwellTicks)
+        #expect(tuning.escalationDegrees == CitrusSquadConfig.navCueEscalationDegrees)
+    }
 }
 
 /// The client-side trip math that drives the nav banner. Pure, so it is unit-tested; it never

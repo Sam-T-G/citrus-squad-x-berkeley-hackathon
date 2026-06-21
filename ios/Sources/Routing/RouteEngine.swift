@@ -10,27 +10,51 @@ struct Cue: Sendable, Equatable {
 /// Turns a body-relative bearing into a belt cue. The bands come straight from the quadrant
 /// mapping table in `docs/04-phone-side.md`. Pure and static so it is trivially testable.
 ///
-/// Hysteresis on the band boundaries (±5° adjacent, ±10° turn-around) is a follow-up; this base
-/// version uses hard bands. See the table in the phone-side doc.
+/// The bands tile the circle with no gaps, so `cue(forRelativeBearing:)` is the same hard-band
+/// mapping as before. The hysteresis used to smooth the belt lives in `NavigationCueSmoother`,
+/// which widens the held band by a margin (`Band.contains(_:margin:)`) before it will switch.
 enum QuadrantMapper {
-    static func cue(forRelativeBearing bearing: Double) -> Cue? {
-        let angle = Bearing.normalize(bearing)
-        switch angle {
-        case 0..<10, 350..<360:
-            return Cue(event: .forward, mask: .front)              // on course, tap Front
-        case 10..<60:
-            return Cue(event: .turnSlight, mask: .right)           // gentle right
-        case 60..<120:
-            return Cue(event: .turnNow, mask: .right)              // sharp right
-        case 120..<240:
-            return Cue(event: .turnAround, mask: .rotate)          // U-turn, both rotate motors
-        case 240..<300:
-            return Cue(event: .turnNow, mask: .left)               // sharp left
-        case 300..<350:
-            return Cue(event: .turnSlight, mask: .left)            // gentle left
-        default:
-            return Cue(event: .forward, mask: .front)
+    /// One arc of the quadrant table: a clockwise span `[lower, lower + width)` on the compass and
+    /// the cue it fires. `isTurnAround` flags the wide rear band so the smoother can give it a wider
+    /// deadband (`docs/04` calls for ±10° there versus ±5° on the adjacent boundaries).
+    struct Band: Equatable {
+        let lower: Double       // inclusive lower edge, normalized to [0, 360)
+        let width: Double       // arc width in degrees, measured clockwise from `lower`
+        let cue: Cue
+        let isTurnAround: Bool
+
+        /// True when `angle` lies in this band widened by `margin` on each side. Circular, so the
+        /// Front band's wrap across north is handled. A margin of 0 gives the raw band.
+        func contains(_ angle: Double, margin: Double = 0) -> Bool {
+            let span = width + 2 * margin
+            if span >= 360 { return true }
+            let offset = Bearing.normalize(angle - (lower - margin))
+            return offset < span
         }
+
+        /// The band's middle bearing. Used to measure how big a correction a band change is, so the
+        /// smoother can commit a real turn faster than a small adjacent nudge.
+        var center: Double { Bearing.normalize(lower + width / 2) }
+    }
+
+    /// The quadrant table, in order, covering the full circle exactly once.
+    static let bands: [Band] = [
+        Band(lower: 350, width: 20,  cue: Cue(event: .forward,    mask: .front),  isTurnAround: false), // 350–10 on course
+        Band(lower: 10,  width: 50,  cue: Cue(event: .turnSlight, mask: .right),  isTurnAround: false), // gentle right
+        Band(lower: 60,  width: 60,  cue: Cue(event: .turnNow,    mask: .right),  isTurnAround: false), // sharp right
+        Band(lower: 120, width: 120, cue: Cue(event: .turnAround, mask: .rotate), isTurnAround: true),  // U-turn
+        Band(lower: 240, width: 60,  cue: Cue(event: .turnNow,    mask: .left),   isTurnAround: false), // sharp left
+        Band(lower: 300, width: 50,  cue: Cue(event: .turnSlight, mask: .left),   isTurnAround: false), // gentle left
+    ]
+
+    /// The raw band a bearing falls in, with no hysteresis.
+    static func band(forRelativeBearing bearing: Double) -> Band {
+        let angle = Bearing.normalize(bearing)
+        return bands.first { $0.contains(angle) } ?? bands[0]
+    }
+
+    static func cue(forRelativeBearing bearing: Double) -> Cue? {
+        band(forRelativeBearing: bearing).cue
     }
 }
 
@@ -62,6 +86,15 @@ final class RouteEngine {
     /// from the cached Maps route later.
     var targetRouteBearing: Double = 0
 
+    /// Resistance on the route-following turn cue (hysteresis + dwell) so the belt does not chatter
+    /// between adjacent taps on heading jitter. Drives the belt path only; the bench `update` stays
+    /// raw so the operator sees the unfiltered heading-to-cue mapping.
+    private var turnSmoother = NavigationCueSmoother()
+
+    /// Live tolerance knobs for the smoother, dialable from the Diagnostics tuning card without a
+    /// rebuild. Seeded from `CitrusSquadConfig`; `tuning.reset()` returns to the shipped defaults.
+    let tuning = NavTuning()
+
     func calibrate(phoneHeading: Double) {
         calibrationOffset = phoneHeading
         isCalibrated = true
@@ -86,6 +119,7 @@ final class RouteEngine {
         distanceToNext = -1
         remaining = -1
         currentCue = nil
+        turnSmoother.reset()
     }
 
     /// Backwards-compatible shim: callers that still hand a maneuver list rebuild the path from the
@@ -109,6 +143,7 @@ final class RouteEngine {
             currentCue = nil
             distanceToNext = -1
             remaining = -1
+            turnSmoother.reset()
             return
         }
 
@@ -120,6 +155,7 @@ final class RouteEngine {
             currentCue = Cue(event: .arrived, mask: .all)
             distanceToNext = metersToEnd
             activeIndex = maneuvers.count
+            turnSmoother.reset()
             return
         }
 
@@ -131,7 +167,15 @@ final class RouteEngine {
 
         targetRouteBearing = Bearing.initial(from: location.coordinate, to: aimPoint.coordinate)
         let relative = Bearing.relative(routeBearing: targetRouteBearing, bodyHeading: bodyHeading)
-        currentCue = QuadrantMapper.cue(forRelativeBearing: relative)
+        // Smooth the route-following cue so heading jitter near a band boundary does not chatter the
+        // belt. The hazard tiers in AppModel preempt navigation, so this never delays a collision cue.
+        // The tolerance knobs come from the live tuning so a walk can dial them without a rebuild.
+        currentCue = turnSmoother.update(relativeBearing: relative,
+                                         dwellTicks: tuning.dwellTicks,
+                                         turnDwellTicks: tuning.turnDwellTicks,
+                                         escalationDegrees: tuning.escalationDegrees,
+                                         adjacentMargin: tuning.adjacentMarginDegrees,
+                                         turnAroundMargin: tuning.turnAroundMarginDegrees)
 
         distanceToNext = distanceToNextPivot(from: projection, remainingToEnd: remaining)
         activeIndex = pivots.filter { $0 <= projection.segmentIndex }.count

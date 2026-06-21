@@ -96,10 +96,23 @@ struct DemoView: View {
                 }
                 talkButton
             }
+            // Manual triggers for the Claude tier, for a demo without the mic. Both need a live camera
+            // frame and an Anthropic key; hidden otherwise. Off the safety path like the voice path.
+            if model.depth.isRunning && model.claudeConfigured {
+                HStack(spacing: 14) {
+                    hudButton("Read sign", tint: .accentColor) {
+                        Task { await model.runDemoCommand(.readSign) }
+                    }
+                    hudButton("Around me", tint: .accentColor) {
+                        Task { await model.runDemoCommand(.describeSurroundings) }
+                    }
+                }
+            }
             if model.isDriving {
                 hudButton("Stop", tint: .gray) { model.stopDriving() }
             }
             voiceTranscript
+            demoLine
         }
         .frame(maxWidth: .infinity)
         .padding(18)
@@ -136,6 +149,18 @@ struct DemoView: View {
         }
         .accessibilityLabel(look.title)
         .accessibilityHint("Sets the destination by voice")
+    }
+
+    /// The line a manual Claude button produced, shown so the room can read the answer without audio.
+    @ViewBuilder private var demoLine: some View {
+        if !model.lastDemoLine.isEmpty {
+            Text(model.lastDemoLine)
+                .font(.caption.weight(.medium))
+                .foregroundStyle(.white)
+                .multilineTextAlignment(.center)
+                .frame(maxWidth: .infinity)
+                .accessibilityElement(children: .combine)
+        }
     }
 
     /// The last thing the wearer said and the agent's reply, so the room can follow a voice command.
@@ -258,22 +283,26 @@ private struct DirectionsBanner: View {
 
     var body: some View {
         let visual = ProductionView.visual(for: bannerCue)
+        let symbol = isCalibrating ? "figure.walk" : visual.symbol
+        let color = isCalibrating ? Color.yellow : visual.color
+        let title = isCalibrating ? "Calibrating" : visual.text
+        let subtitle = isCalibrating ? calibratingSubtitle : distanceToNextText
         return VStack(alignment: .leading, spacing: 8) {
             HStack(spacing: 12) {
-                Image(systemName: visual.symbol)
+                Image(systemName: symbol)
                     .font(.system(size: 32, weight: .bold))
-                    .foregroundStyle(visual.color)
+                    .foregroundStyle(color)
                     .contentTransition(.symbolEffect(.replace))
                 VStack(alignment: .leading, spacing: 1) {
-                    Text(visual.text)
+                    Text(title)
                         .font(.title2.bold())
                         .foregroundStyle(.white)
-                    Text(distanceToNextText)
+                    Text(subtitle)
                         .font(.subheadline.weight(.medium))
                         .foregroundStyle(.white.opacity(0.7))
                 }
             }
-            if hasRoute {
+            if hasRoute, !isCalibrating {
                 HStack(spacing: 14) {
                     Label(remainingText, systemImage: "flag.checkered")
                     Label(etaText, systemImage: "clock")
@@ -285,19 +314,37 @@ private struct DirectionsBanner: View {
         .padding(.horizontal, 14)
         .padding(.vertical, 12)
         .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 16))
+        .contentShape(Rectangle())
+        .onTapGesture { if isCalibrating { _ = model.calibrate() } }
         .accessibilityElement(children: .ignore)
-        .accessibilityLabel("\(visual.text), \(distanceToNextText)")
+        .accessibilityLabel("\(title), \(subtitle)")
+        .accessibilityAddTraits(isCalibrating ? .isButton : [])
+        .accessibilityHint(isCalibrating ? "Double tap to calibrate facing forward now" : "")
     }
 
-    /// The route turn to show. Falls back to a calm "Walk on" so the banner never blanks mid-route.
+    /// During a live walk the belt withholds turns until the mount offset locks; the banner says so.
+    private var isCalibrating: Bool {
+        model.mode == .live && !model.isHeadingCalibrated
+    }
+
+    /// Walking outdoors locks it best (it catches the magnetic bias), but a tap captures the current
+    /// facing as forward so the demo is never stuck calibrating indoors or on the bench.
+    private var calibratingSubtitle: String {
+        "walk a few steps, or tap to set forward (\(Int(model.calibrationProgress * 100))%)"
+    }
+
+    /// The route turn to show. Falls back to a calm "Walk on" so the banner never blanks. Gated on a
+    /// loaded route: with no destination the bench still computes `route.currentCue` toward its slider
+    /// bearing for the diagnostics card, but the demo banner must not echo that as a real turn.
     private var bannerCue: ResolvedCue {
-        guard let cue = model.route.currentCue else { return .idle }
+        guard hasRoute, let cue = model.route.currentCue else { return .idle }
         return ResolvedCue(event: cue.event, mask: cue.mask, intensity: 0, source: .turn)
     }
 
     private var hasRoute: Bool { model.route.path.count >= 2 }
 
     private var distanceToNextText: String {
+        guard hasRoute else { return "no route loaded" }
         let distance = model.route.distanceToNext
         guard distance >= 0 else { return "follow the route" }
         return String(format: "in %.0f m", distance)
@@ -333,14 +380,19 @@ private struct StatusBar: View {
 
     var body: some View {
         let visual = ProductionView.visual(for: model.resolved)
-        return HStack(spacing: 10) {
+        // Cue on the left, belt indicator centered between flexible spacers, sensor stats pinned to
+        // their natural width on the right so "clear" and the distance never wrap. The cue text gives
+        // way first when space is tight; the stats stay readable.
+        return HStack(spacing: 12) {
             cueChip(visual)
-                .layoutPriority(1)
+            Spacer(minLength: 8)
             BeltMini(mask: model.resolved.mask, accent: visual.color)
+            Spacer(minLength: 8)
             stats
+                .fixedSize()
         }
         .frame(maxWidth: .infinity)
-        .padding(.horizontal, 14)
+        .padding(.horizontal, 16)
         .padding(.vertical, 10)
         .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 16))
     }
@@ -356,12 +408,12 @@ private struct StatusBar: View {
                     .font(.subheadline.bold())
                     .foregroundStyle(.white)
                     .lineLimit(1)
-                    .minimumScaleFactor(0.8)
+                    .minimumScaleFactor(0.75)
                 Text(model.resolved.source.rawValue)
                     .font(.caption2.monospaced())
                     .foregroundStyle(.white.opacity(0.6))
+                    .lineLimit(1)
             }
-            Spacer(minLength: 0)
         }
     }
 
@@ -384,6 +436,7 @@ private struct StatusBar: View {
             }
             .font(.caption.weight(.semibold).monospaced())
             .foregroundStyle(hazard == nil ? .green : .orange)
+            .lineLimit(1)
         } else {
             Text("LiDAR off")
                 .font(.caption2.monospaced())

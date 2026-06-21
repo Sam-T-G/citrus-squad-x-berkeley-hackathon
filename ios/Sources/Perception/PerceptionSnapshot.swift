@@ -1,0 +1,197 @@
+import Foundation
+
+/// The structured scene at one instant, the context the Claude tier reasons over instead of a raw
+/// frame. This is the piece `docs/14` flagged as its top blocker (blindspot #3) and
+/// `PERCEPTION-AVOIDANCE-HANDOFF.md` §C specifies.
+///
+/// A pure `Sendable` value, assembled on the main actor from state that already exists: the LiDAR
+/// band distances (ground truth for distance), the current fused vision hazard (what is ahead and on
+/// which side), and the route context. It carries only what the sensors actually reported, so the
+/// verifier can reject any spoken line the data does not support.
+///
+/// The per-band object lists are filled from the depth-fused CV scene: every object the detector saw,
+/// placed in its band with its LiDAR distance, so Claude reasons over the whole frame and not just the
+/// single nearest hazard. The per-band `nearestMeters` is the raw LiDAR floor (it catches things the
+/// detector has no label for, like a wall or a pole), so the two together let Claude say "a bench is
+/// close on your left, and something unlabeled is closer dead ahead." Motion stays `unknown` until the
+/// `MotionTracker` merge (handoff Part B); with no CV scene it falls back to the one fused hazard.
+struct PerceptionSnapshot: Sendable {
+    /// One detected object in a band. `motionState` is `unknown` until the motion tracker lands;
+    /// `tentative` is true for a low-confidence detection so the model hedges it.
+    struct ObjectSummary: Sendable, Equatable {
+        var label: String
+        var distanceMeters: Double      // -1 when unknown
+        var motionState: MotionState
+        var tentative: Bool = false
+    }
+
+    enum MotionState: String, Sendable { case unknown, stationary, approaching, receding, moving }
+
+    /// Which horizontal third an object falls in, in the wearer's frame.
+    enum BandSide: Sendable { case left, center, right }
+
+    /// A detected object pre-classified into a band, the input the builder bins. The caller computes
+    /// the band and the fused distance from the CV detections (using the app's `PersonFusion.quadrant`
+    /// side convention), which keeps this value type pure and the convention in one place.
+    struct SceneObject: Sendable {
+        var label: String
+        var distanceMeters: Double
+        var band: BandSide
+        var tentative: Bool = false
+        var motionState: MotionState = .unknown
+    }
+
+    /// A horizontal third of the scene. `nearestMeters` is the LiDAR floor for that third.
+    struct Band: Sendable, Equatable {
+        var nearestMeters: Double       // -1 when no valid return
+        var objects: [ObjectSummary] = []
+    }
+
+    /// The route picture, read through `RouteEngine`'s already-published state.
+    struct RouteContext: Sendable, Equatable {
+        var nextTurn: String            // "left" / "right" / "straight" / "arriving" / "u-turn"
+        var distanceToNextMeters: Double
+        var remainingMeters: Double
+        var onRoute: Bool
+    }
+
+    enum Confidence: String, Sendable { case low, medium, high }
+
+    var left: Band
+    var center: Band
+    var right: Band
+    var route: RouteContext?
+    var confidence: Confidence
+
+    // MARK: - Predicates
+
+    /// Something worth handing to Claude: a tracked object in any band, or a LiDAR return inside the
+    /// belt's proximity range. When this is false the scene is empty and the grounded "clear" line is
+    /// already the whole answer, so the describe path skips the model call entirely.
+    var isInformative: Bool {
+        [left, center, right].contains { !$0.objects.isEmpty } || hasCloseObstacle
+    }
+
+    /// Any band has a LiDAR return inside the proximity range. `SpokenLineGuard` uses this to refuse a
+    /// "clear path" claim the sensors contradict.
+    var hasCloseObstacle: Bool {
+        [left, center, right].contains {
+            $0.nearestMeters > 0 && $0.nearestMeters <= CitrusSquadConfig.proximityThresholdMeters
+        }
+    }
+
+    // MARK: - Assembly
+
+    /// Build the snapshot from the state the app already holds. Pure, so it is unit-testable without a
+    /// device. `hazard` is the current fused vision/LiDAR hazard (nil when nothing is flagged); it is
+    /// binned into a band by its side mask. `cameraRunning` is `DepthService.isRunning`: when the
+    /// camera is off, distances are stale and confidence drops to `low`.
+    static func make(bands: BandDepths,
+                     sceneObjects: [SceneObject],
+                     hazard: Hazard?,
+                     route: RouteContext?,
+                     cameraRunning: Bool) -> PerceptionSnapshot {
+        var left = Band(nearestMeters: bands.left)
+        var center = Band(nearestMeters: bands.center)
+        var right = Band(nearestMeters: bands.right)
+
+        if !sceneObjects.isEmpty {
+            // Prefer the full CV scene: every detection placed in its band with its fused depth.
+            for object in sceneObjects {
+                let summary = ObjectSummary(label: object.label, distanceMeters: object.distanceMeters,
+                                            motionState: object.motionState, tentative: object.tentative)
+                switch object.band {
+                case .left: left.objects.append(summary)
+                case .center: center.objects.append(summary)
+                case .right: right.objects.append(summary)
+                }
+            }
+        } else if let hazard, let summary = objectSummary(for: hazard) {
+            // No CV scene (detector off or nothing found): fall back to the one fused hazard. The tap
+            // is on the hazard's side (docs/12); a mask with no left/right reads as straight ahead.
+            if hazard.mask.contains(.left) {
+                left.objects.append(summary)
+            } else if hazard.mask.contains(.right) {
+                right.objects.append(summary)
+            } else {
+                center.objects.append(summary)
+            }
+        }
+
+        // Lead each band with its nearest object so the model hears what matters first.
+        let byDistance: (ObjectSummary, ObjectSummary) -> Bool = { a, b in
+            let da = a.distanceMeters > 0 ? a.distanceMeters : .greatestFiniteMagnitude
+            let db = b.distanceMeters > 0 ? b.distanceMeters : .greatestFiniteMagnitude
+            return da < db
+        }
+        left.objects.sort(by: byDistance)
+        center.objects.sort(by: byDistance)
+        right.objects.sort(by: byDistance)
+
+        return PerceptionSnapshot(left: left, center: center, right: right, route: route,
+                                  confidence: confidence(bands: bands, cameraRunning: cameraRunning))
+    }
+
+    private static func objectSummary(for hazard: Hazard) -> ObjectSummary? {
+        let label = hazard.isPerson ? "person" : (hazard.label ?? "obstacle")
+        return ObjectSummary(label: label, distanceMeters: hazard.distanceMeters,
+                             motionState: .unknown, tentative: false)
+    }
+
+    /// Bias confidence low when the camera is off or LiDAR returns are sparse, high when every band
+    /// has a valid distance. A low-confidence snapshot tells the verifier to hedge rather than claim a
+    /// clear path the data does not support.
+    private static func confidence(bands: BandDepths, cameraRunning: Bool) -> Confidence {
+        guard cameraRunning else { return .low }
+        let valid = [bands.left, bands.center, bands.right].filter { $0 > 0 }.count
+        switch valid {
+        case 3: return .high
+        case 1, 2: return .medium
+        default: return .low
+        }
+    }
+
+    // MARK: - Serialization
+
+    /// Serialize to XML-tagged input, not prose, so the model reads structure (Anthropic prompt
+    /// guidance). This is the literal context string handed to the draft and verify calls. Distances
+    /// are rounded to a tenth of a meter; an unknown distance is omitted rather than sent as -1.
+    func xmlForClaude() -> String {
+        var lines: [String] = ["<scene confidence=\"\(confidence.rawValue)\">"]
+        lines.append(bandXML(name: "left", band: left))
+        lines.append(bandXML(name: "center", band: center))
+        lines.append(bandXML(name: "right", band: right))
+        if let route {
+            lines.append("  <route next_turn=\"\(route.nextTurn)\"" +
+                         metersAttr(" distance_to_turn_m", route.distanceToNextMeters) +
+                         metersAttr(" remaining_m", route.remainingMeters) +
+                         " on_route=\"\(route.onRoute)\" />")
+        }
+        lines.append("</scene>")
+        return lines.joined(separator: "\n")
+    }
+
+    private func bandXML(name: String, band: Band) -> String {
+        var attrs = ""
+        if band.nearestMeters > 0 {
+            attrs = " nearest_m=\"\(rounded(band.nearestMeters))\""
+        }
+        guard !band.objects.isEmpty else { return "  <band side=\"\(name)\"\(attrs) />" }
+        var out = "  <band side=\"\(name)\"\(attrs)>"
+        for object in band.objects {
+            let tentative = object.tentative ? " tentative=\"true\"" : ""
+            out += "\n    <object label=\"\(object.label)\" motion=\"\(object.motionState.rawValue)\"" +
+                   metersAttr(" distance_m", object.distanceMeters) + tentative + " />"
+        }
+        out += "\n  </band>"
+        return out
+    }
+
+    private func metersAttr(_ name: String, _ meters: Double) -> String {
+        meters > 0 ? "\(name)=\"\(rounded(meters))\"" : ""
+    }
+
+    private func rounded(_ meters: Double) -> String {
+        String(format: "%.1f", meters)
+    }
+}

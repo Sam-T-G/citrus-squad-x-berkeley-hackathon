@@ -7,14 +7,16 @@ forwarder plus a health dashboard.
 
 This is the no-ESP32 / no-Wi-Fi path: the laptop hosts the link and tethers to
 the Arduino over USB. The firmware it drives is `server/arduino/belt.ino`, which
-reads ONE ASCII command byte per cue:
-  's' stop/hazard   'l' turn left   'r' turn right   'f' go straight
-So this server translates each LC2 cue down to that single byte (see
-`lc2_to_command`) and only writes when the command CHANGES, so the firmware's
-one-shot patterns are not re-triggered by the 10 Hz heartbeat.
+reads ONE newline-terminated word per cue:
+  forward | stop | left | right | rotate_left | rotate_right | u_turn | idle
+Each word latches a continuous pulse pattern that runs until the next command, so
+`idle` is what stops the belt. This server translates each LC2 cue to a word (see
+`lc2_to_command`), writes only when the command CHANGES (so the heartbeat does not
+re-latch the same pattern), and synthesizes `idle` if the link goes silent.
 
-Wire in:  4 raw LC2 bytes per WebSocket frame  ->  event, mask, intensity, seq
-Wire out: 1 ASCII command byte per cue change   ->  b's' / b'l' / b'r' / b'f'
+Wire in:  4 raw LC2 bytes per packet            ->  event, mask, intensity, seq
+          over UDP (the phone's real link) or a WebSocket frame (test client / debug)
+Wire out: 1 newline-terminated word per change  ->  b"left\\n" / b"stop\\n" / b"idle\\n" / ...
 
 Run:  uvicorn app:app --host 0.0.0.0 --port 8080
       (or `python app.py`, which starts uvicorn for you)
@@ -23,7 +25,9 @@ Config via env:
   SERIAL_PORT   serial device, e.g. /dev/tty.usbmodem1101. Unset = auto-detect, then mock.
   SERIAL_BAUD   default 9600 (matches Serial.begin(9600) in belt.ino)
   PORT          HTTP/WebSocket port, default 8080
+  UDP_PORT      UDP port the phone sends LC2 to, default 9999 (matches iOS espPort)
   WARMUP_S      seconds to wait after opening serial, for the Arduino auto-reset, default 2.0
+  SILENCE_TIMEOUT_S  send `idle` if no cue arrives within this, default 0.5
 
 See docs/15-belt-server-bridge-plan.md for the why behind every choice here.
 """
@@ -49,7 +53,15 @@ except ImportError:  # the app still runs in mock mode without these
 
 SERIAL_BAUD = int(os.environ.get("SERIAL_BAUD", "9600"))
 HTTP_PORT = int(os.environ.get("PORT", "8080"))
+# UDP port the phone's LC2Transmitter sends to. Matches the iOS default `espPort` (9999),
+# so the operator only has to point the belt host at this laptop's IP.
+UDP_PORT = int(os.environ.get("UDP_PORT", "9999"))
 WARMUP_S = float(os.environ.get("WARMUP_S", "2.0"))
+# The firmware pulses continuously until told otherwise, so if the phone link goes silent
+# we must send `idle` ourselves or the belt buzzes forever. Mirrors the 500 ms silence-to-
+# quiet rule in docs/03. Slightly longer than two 10 Hz heartbeats so a single dropped
+# packet does not blip the belt off.
+SILENCE_TIMEOUT_S = float(os.environ.get("SILENCE_TIMEOUT_S", "0.5"))
 
 # LC2 event codes (docs/03-protocol.md).
 EV_IDLE = 0x00
@@ -58,6 +70,7 @@ EV_TURN_SLIGHT = 0x20
 EV_TURN_NOW = 0x21
 EV_TURN_AROUND = 0x22
 EV_ARRIVED = 0x23
+EV_FORWARD = 0x24       # on-course / proceed straight
 EV_OBSTACLE = 0x40      # obstacle-near (LiDAR)
 
 # Quadrant mask bits, cardinal layout (matches belt.ino and the iOS QuadrantMask).
@@ -65,6 +78,9 @@ MASK_FRONT = 0x01
 MASK_LEFT = 0x02
 MASK_RIGHT = 0x04
 MASK_BACK = 0x08
+
+# Synthesized when the link goes silent, to quiet the belt.
+IDLE_LC2 = bytes([EV_IDLE, 0, 0, 0])
 
 
 def autodetect_port() -> str | None:
@@ -81,33 +97,43 @@ def autodetect_port() -> str | None:
     return None
 
 
-def lc2_to_command(lc2: bytes) -> bytes | None:
-    """Translate a 4-byte LC2 cue to the single ASCII byte belt.ino understands, or
-    None for "send nothing" (the belt falls quiet on its own).
+def lc2_to_command(lc2: bytes) -> bytes:
+    """Translate a 4-byte LC2 cue to the newline-terminated word belt.ino understands.
 
-    The firmware has four patterns: stop/hazard buzz, and a double-tap on left, right,
-    or front. Intensity, sequence, and the far-left/far-right distinction do not survive
-    this mapping; the Arduino path is the coarse fallback, the ESP32 path keeps full LC2.
+    The firmware (Angelo's) reads `readStringUntil('\\n')` and latches a CONTINUOUS pulse
+    per state, so every cue maps to a command and `idle` is what stops the belt. Intensity,
+    sequence, and the far-left/far-right distinction do not survive this mapping; the
+    Arduino path is the coarse fallback, the ESP32 path keeps full LC2.
 
-      - idle (0x00)                        -> None
-      - hazards + U-turn (0x10/0x40/0x22)  -> b's' (stop/alert buzz)
-      - arrived (0x23)                     -> b's' (no sweep pattern on this firmware)
-      - directional turns, by mask side    -> b'l' / b'r' / b'f'
+      - idle (0x00)                  -> b"idle\\n"          (stops the belt; must be sent)
+      - vision/obstacle (0x10/0x40)  -> b"stop\\n"          (all-servo hazard buzz)
+      - turn-around (0x22)           -> b"u_turn\\n"        (dedicated U-turn pattern)
+      - arrived (0x23)               -> b"stop\\n"          (no arrival pattern; a buzz reads
+                                                            as "you're here")
+      - directional turns, by mask   -> b"left\\n" / b"right\\n" / b"forward\\n"
+
+    Angelo's firmware also has `rotate_left`/`rotate_right` (in-place reorient) and
+    `low_battery` (a finite alert). No LC2 event maps to those today, so they stay for
+    manual/firmware testing.
     """
     event, mask = lc2[0], lc2[1]
     if event == EV_IDLE:
-        return None
-    if event in (EV_VISION, EV_OBSTACLE, EV_TURN_AROUND, EV_ARRIVED):
-        return b"s"
+        return b"idle\n"
+    if event in (EV_VISION, EV_OBSTACLE, EV_ARRIVED):
+        return b"stop\n"
+    if event == EV_TURN_AROUND:
+        return b"u_turn\n"
+    if event == EV_FORWARD:
+        return b"forward\n"
     if mask & MASK_LEFT:
-        return b"l"
+        return b"left\n"
     if mask & MASK_RIGHT:
-        return b"r"
+        return b"right\n"
     if mask & MASK_FRONT:
-        return b"f"
+        return b"forward\n"
     if mask & MASK_BACK:
-        return b"s"      # no dedicated back pattern; treat as an alert
-    return None
+        return b"stop\n"     # no dedicated back pattern; treat as an alert
+    return b"idle\n"
 
 
 def parse_inbound(message: dict) -> bytes | None:
@@ -146,6 +172,8 @@ class Hub:
         self.frames_out = 0
         self.last_frame_ts = 0.0
         self.last_lc2 = b""
+        # Where the last packet came from ("ip:port" for UDP, "ws" for the WebSocket path).
+        self.last_src = ""
         # Last command actually written, so a repeated cue (the 10 Hz heartbeat restages
         # the same one) is not re-sent and the firmware's one-shot pattern fires once.
         self.last_cmd: bytes | None = None
@@ -161,26 +189,30 @@ class Hub:
             self.latest.put_nowait(lc2)
 
     def next_command(self, lc2: bytes) -> bytes | None:
-        """Map a cue to its command and suppress repeats. Idle resets the latch so the
-        next same-direction cue fires again (turn-left, idle, turn-left = two taps)."""
+        """Map a cue to its command, suppressing repeats so the firmware's continuous
+        pulse is not re-latched every heartbeat. Returns None when unchanged."""
         cmd = lc2_to_command(lc2)
-        if cmd is None:
-            self.last_cmd = None
-            return None
         if cmd == self.last_cmd:
             return None
         self.last_cmd = cmd
         return cmd
 
+    async def _await_cue(self) -> bytes:
+        """The next cue, or a synthesized idle if the link falls silent past the timeout."""
+        try:
+            return await asyncio.wait_for(self.latest.get(), timeout=SILENCE_TIMEOUT_S)
+        except asyncio.TimeoutError:
+            return IDLE_LC2
+
     async def writer(self) -> None:
         if self.mock:
             print(f"[serial] MOCK mode (no Arduino). Set SERIAL_PORT to a real device. baud={SERIAL_BAUD}")
             while True:
-                cmd = self.next_command(await self.latest.get())
+                cmd = self.next_command(await self._await_cue())
                 if cmd is None:
                     continue
                 self.frames_out += 1
-                print(f"[mock-serial] -> {cmd.decode()}")
+                print(f"[mock-serial] -> {cmd.decode().strip()}")
             return
 
         backoff = 1.0
@@ -193,7 +225,7 @@ class Hub:
                 self.last_cmd = None  # fresh link: do not assume the board's prior state
                 backoff = 1.0
                 while True:
-                    cmd = self.next_command(await self.latest.get())
+                    cmd = self.next_command(await self._await_cue())
                     if cmd is None:
                         continue
                     await ser.write_async(cmd)
@@ -208,10 +240,32 @@ class Hub:
 hub = Hub()
 
 
+class LC2DatagramProtocol(asyncio.DatagramProtocol):
+    """Receives the phone's raw 4-byte LC2 packets over UDP and feeds the same hub the
+    WebSocket path uses. This is the real phone link: the iOS `LC2Transmitter` sends UDP
+    at 10 Hz to the configured host:port, so the operator just points the belt host at
+    this laptop. The WebSocket `/belt` stays for the stand-in test client and debugging."""
+
+    def datagram_received(self, data: bytes, addr) -> None:
+        if len(data) >= 4:
+            hub.last_src = f"{addr[0]}:{addr[1]}"
+            hub.submit(bytes(data[:4]))
+
+
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     task = asyncio.create_task(hub.writer())
+    loop = asyncio.get_running_loop()
+    udp_transport = None
+    try:
+        udp_transport, _ = await loop.create_datagram_endpoint(
+            LC2DatagramProtocol, local_addr=("0.0.0.0", UDP_PORT))
+        print(f"[udp] listening for phone LC2 packets on UDP {UDP_PORT}")
+    except Exception as exc:
+        print(f"[udp] could not bind UDP {UDP_PORT}: {exc!r} (WebSocket path still works)")
     yield
+    if udp_transport is not None:
+        udp_transport.close()
     task.cancel()
     with suppress(asyncio.CancelledError):
         await task
@@ -243,6 +297,7 @@ async def belt(ws: WebSocket) -> None:
                 break
             lc2 = parse_inbound(message)
             if lc2 is not None:
+                hub.last_src = "ws"
                 hub.submit(lc2)
     finally:
         hub.ws_clients = max(0, hub.ws_clients - 1)
@@ -262,7 +317,9 @@ async def health() -> JSONResponse:
         "frames_out": hub.frames_out,
         "last_frame_age_s": age,
         "last_lc2_hex": hub.last_lc2.hex(" ") if hub.last_lc2 else None,
-        "last_cmd": hub.last_cmd.decode() if hub.last_cmd else None,
+        "last_cmd": hub.last_cmd.decode().strip() if hub.last_cmd else None,
+        "udp_port": UDP_PORT,
+        "last_src": hub.last_src or None,
     })
 
 
@@ -272,8 +329,7 @@ async def test(event: int = 0x21, mask: int = 0x04, intensity: int = 192, seq: i
     Default is turn-now on the Right quadrant. Try /test?event=16&mask=6 for a hazard."""
     lc2 = bytes([event & 0xFF, mask & 0xFF, intensity & 0xFF, seq & 0xFF])
     hub.submit(lc2)
-    cmd = lc2_to_command(lc2)
-    return {"sent_lc2_hex": lc2.hex(" "), "command": cmd.decode() if cmd else None}
+    return {"sent_lc2_hex": lc2.hex(" "), "command": lc2_to_command(lc2).decode().strip()}
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -292,10 +348,11 @@ DASHBOARD_HTML = """<!doctype html><html><head><meta charset=utf-8>
 <h1>Citrus Squad belt bridge</h1>
 <div id=board></div>
 <p>
- <button onclick="fire(0x21,0x02)">turn left (l)</button>
- <button onclick="fire(0x21,0x04)">turn right (r)</button>
- <button onclick="fire(0x20,0x01)">straight (f)</button>
- <button onclick="fire(0x10,0x06)">hazard (s)</button>
+ <button onclick="fire(0x21,0x02)">left</button>
+ <button onclick="fire(0x21,0x04)">right</button>
+ <button onclick="fire(0x20,0x01)">forward</button>
+ <button onclick="fire(0x22,0x06)">u_turn</button>
+ <button onclick="fire(0x10,0x06)">stop (hazard)</button>
  <button onclick="fire(0x00,0x00)">idle</button>
 </p>
 <script>

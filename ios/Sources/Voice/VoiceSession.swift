@@ -236,11 +236,15 @@ actor VoiceSession {
             ],
             "agent": [
                 "listen": ["provider": ["type": "deepgram", "model": "nova-3"]],
-                // Deepgram-managed OpenAI model (no endpoint, no key handed to Deepgram). The most
-                // reliably available managed think model. Claude is used for the V3 on-device
-                // evaluator with our own key, which is the cleaner Anthropic integration anyway.
+                // Claude as the Deepgram-managed think provider (no endpoint, no key handed to
+                // Deepgram, billed against the Deepgram credit). The model id is Deepgram's
+                // managed-Anthropic allowlist string, NOT the native API id: claude-4-5-haiku-latest,
+                // not claude-haiku-4-5. Haiku keeps the think pass fast; the in-function tiers still
+                // call Claude directly with our own key for the heavier describe and vision work.
+                // VERIFY ON DEVICE: confirm FunctionCallRequest still fires with the anthropic
+                // provider before trusting the tier system, and watch the think latency vs gpt-4o-mini.
                 "think": [
-                    "provider": ["type": "open_ai", "model": "gpt-4o-mini"],
+                    "provider": ["type": "anthropic", "model": "claude-4-5-haiku-latest"],
                     "prompt": Self.systemPrompt,
                     "functions": VoiceFunction.allSpecs,
                 ],
@@ -263,10 +267,17 @@ actor VoiceSession {
     }
 
     private static let systemPrompt = """
-    You are the voice of a haptic navigation belt for a blind walker. Keep replies short, calm, and \
-    meant to be heard, not read. You have functions to report the wearer's current location, the \
-    route status, and the surroundings, and to set a destination, recalibrate, or stop. Always call \
-    the matching function to answer a request instead of guessing or saying you cannot. Never invent \
-    surroundings or claim a path is clear unless a function told you so.
+    You are the voice of a haptic navigation belt for a blind walker. Always call the function that \
+    matches the request instead of answering from your own knowledge. There are functions to set a \
+    destination, report the route and the next turn, say where the wearer is, describe the \
+    surroundings, check whether the path ahead is clear, read a sign or printed text, find an \
+    entrance, recalibrate, connect the belt, and stop.
+
+    When a function returns a sentence, speak it back exactly as written, word for word, with nothing \
+    added or removed. That sentence is already grounded in the device's sensors and written for a \
+    blind listener, so rephrasing it can only make it wrong or slower. Only when no function fits do \
+    you answer in your own words, kept short and calm and meant to be heard, not read. Never invent \
+    surroundings, never claim the path is clear unless a function said so, and never guess at text or \
+    directions.
     """
 }
