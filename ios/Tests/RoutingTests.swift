@@ -59,6 +59,71 @@ struct QuadrantMapperTests {
     @Test func slightLeft() {
         #expect(QuadrantMapper.cue(forRelativeBearing: 320) == Cue(event: .turnSlight, mask: .left))
     }
+
+    // The bands tile the circle exactly, so the raw band at each boundary still matches the table.
+    @Test func bandBoundariesMatchTheTable() {
+        #expect(QuadrantMapper.band(forRelativeBearing: 9.9).cue == Cue(event: .forward, mask: .front))
+        #expect(QuadrantMapper.band(forRelativeBearing: 10).cue == Cue(event: .turnSlight, mask: .right))
+        #expect(QuadrantMapper.band(forRelativeBearing: 60).cue == Cue(event: .turnNow, mask: .right))
+        #expect(QuadrantMapper.band(forRelativeBearing: 350).cue == Cue(event: .forward, mask: .front))
+    }
+
+    // A widened band reaches past each boundary by the margin, with the Front band's wrap handled.
+    @Test func widenedBandCoversTheMargin() {
+        let front = QuadrantMapper.bands[0] // 350–10, widened by 5° becomes 345–15
+        #expect(front.contains(12, margin: 5))    // 2° past the 10° edge, inside the 5° margin
+        #expect(!front.contains(16, margin: 5))   // 6° past, outside it
+        #expect(front.contains(348, margin: 5))   // 2° below the 350° edge, inside the low margin
+        #expect(!front.contains(343, margin: 5))  // 7° below, outside it
+    }
+}
+
+/// The resistance on the route-following turn cue: heading jitter near a band boundary holds the
+/// current cue (hysteresis), and a new band must persist a few ticks before the belt switches to it
+/// (dwell). Replaying a bearing sequence makes the state machine deterministic to check.
+struct NavigationCueSmootherTests {
+    private func replay(_ bearings: [Double]) -> [Cue] {
+        var smoother = NavigationCueSmoother()
+        return bearings.map { smoother.update(relativeBearing: $0) }
+    }
+
+    private let front = Cue(event: .forward, mask: .front)
+    private let slightRight = Cue(event: .turnSlight, mask: .right)
+    private let sharpRight = Cue(event: .turnNow, mask: .right)
+
+    @Test func firstReadingCommitsImmediately() {
+        // No history, so the belt is correct from the first tick instead of holding a stale cue.
+        var smoother = NavigationCueSmoother()
+        #expect(smoother.update(relativeBearing: 90) == sharpRight)
+    }
+
+    @Test func jitterAcrossABoundaryHoldsTheCue() {
+        // Start on course, then dither a few degrees past the 10° boundary. Inside the deadband, so
+        // the belt stays on Front instead of flicking to a slight-right tap every frame.
+        let cues = replay([5, 11, 14, 8, 13])
+        #expect(cues.allSatisfy { $0 == front })
+    }
+
+    @Test func aSingleFrameSpikeDoesNotSwitch() {
+        // One frame jumps well past the deadband, then it is gone. Dwell swallows it.
+        let cues = replay([0, 90, 0])
+        #expect(cues == [front, front, front])
+    }
+
+    @Test func aSustainedTurnCommitsAfterTheDwell() {
+        // Held past the deadband for the full dwell, the belt commits to the new band.
+        let cues = replay([0, 90, 90, 90])
+        #expect(cues[0] == front)        // on course
+        #expect(cues[1] == front)        // candidate, not yet committed
+        #expect(cues[2] == front)        // still pending
+        #expect(cues[3] == sharpRight)   // dwell satisfied (navCueDwellTicks = 3)
+    }
+
+    @Test func crossingTheDeadbandThenSettlingCommitsTheBand() {
+        // Move clearly into slight-right (20°, past the 10°+5° deadband) and stay: commits after dwell.
+        let cues = replay([0, 20, 20, 20])
+        #expect(cues[3] == slightRight)
+    }
 }
 
 /// The client-side trip math that drives the nav banner. Pure, so it is unit-tested; it never

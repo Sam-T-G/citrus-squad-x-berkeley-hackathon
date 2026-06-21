@@ -20,6 +20,10 @@ enum CitrusSquadConfig {
     static let hysteresisAdjacentDegrees = 5.0
     /// Deadband on the turn-around case. `docs/04` quadrant mapping.
     static let hysteresisTurnAroundDegrees = 10.0
+    /// Consecutive 10 Hz ticks a new turn band must persist before the belt switches to it, on top of
+    /// the boundary hysteresis. Smooths single-frame heading spikes; ~300 ms, short enough that a real
+    /// turn still feels immediate. Navigation only: the hazard tiers preempt this and stay instant.
+    static let navCueDwellTicks = 3
     /// Default tap travel distance, LC2 byte 2. `docs/03`.
     static let intensityDefault: UInt8 = 192
     /// ESP32 falls back to quiet after this much silence. `docs/03` / `docs/06`, here for reference.
