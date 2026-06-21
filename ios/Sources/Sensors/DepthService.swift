@@ -85,6 +85,12 @@ final class DepthService: NSObject {
     /// and `AI-USAGE-AUDIT-AND-EXPANSION.md`.
     private(set) var latestVisionFrame: CGImage?
 
+    /// The latest depth-fused scene: every object the detector saw this frame, with its LiDAR distance
+    /// and side. This is what lets the Claude tier describe the whole scene (what is in each band and
+    /// how close) instead of just the single nearest hazard. Empty when the detector found nothing or
+    /// the camera tier is off. Read on the main actor by the `PerceptionSnapshot` builder.
+    private(set) var sceneDetections: [PersonDetection] = []
+
     /// CIContext is documented thread-safe for rendering, so the perception queue uses it directly.
     nonisolated(unsafe) private let ciContext = CIContext(options: nil)
 
@@ -132,6 +138,7 @@ final class DepthService: NSObject {
         isRunning = false
         previewImage = nil
         latestVisionFrame = nil
+        sceneDetections = []
     }
 
     /// Encode the latest cached frame to JPEG for a Claude vision call. Main-actor and on demand, so
@@ -185,6 +192,10 @@ extension DepthService: ARSessionDelegate {
     /// Push the gated person cue and the overlay boxes to the main actor. `.hold` leaves the cue
     /// exactly as the last tick set it.
     @MainActor private func applyVision(_ result: PersonFrameResult) {
+        // The full depth-fused scene for the Claude describe tier. Self-clears each frame (empty when
+        // nothing is detected), so a stale object label cannot linger while the detector is running.
+        sceneDetections = result.scene
+
         switch result.action {
         case .report(let side, let distance):
             // The wire event stays vision-danger for any close navigation-class object, but carry the

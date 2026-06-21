@@ -9,18 +9,37 @@ import Foundation
 /// which side), and the route context. It carries only what the sensors actually reported, so the
 /// verifier can reject any spoken line the data does not support.
 ///
-/// What it cannot fill yet: rich per-band object lists with motion. Those arrive with the YOLO-World
-/// and `MotionTracker` merge (handoff Part B/C); the `Band.objects` array is shaped for them now and
-/// holds at most the one fused hazard until then.
+/// The per-band object lists are filled from the depth-fused CV scene: every object the detector saw,
+/// placed in its band with its LiDAR distance, so Claude reasons over the whole frame and not just the
+/// single nearest hazard. The per-band `nearestMeters` is the raw LiDAR floor (it catches things the
+/// detector has no label for, like a wall or a pole), so the two together let Claude say "a bench is
+/// close on your left, and something unlabeled is closer dead ahead." Motion stays `unknown` until the
+/// `MotionTracker` merge (handoff Part B); with no CV scene it falls back to the one fused hazard.
 struct PerceptionSnapshot: Sendable {
-    /// One detected object in a band. `motionState` is `unknown` until the motion tracker lands.
+    /// One detected object in a band. `motionState` is `unknown` until the motion tracker lands;
+    /// `tentative` is true for a low-confidence detection so the model hedges it.
     struct ObjectSummary: Sendable, Equatable {
         var label: String
         var distanceMeters: Double      // -1 when unknown
         var motionState: MotionState
+        var tentative: Bool = false
     }
 
     enum MotionState: String, Sendable { case unknown, stationary, approaching, receding, moving }
+
+    /// Which horizontal third an object falls in, in the wearer's frame.
+    enum BandSide: Sendable { case left, center, right }
+
+    /// A detected object pre-classified into a band, the input the builder bins. The caller computes
+    /// the band and the fused distance from the CV detections (using the app's `PersonFusion.quadrant`
+    /// side convention), which keeps this value type pure and the convention in one place.
+    struct SceneObject: Sendable {
+        var label: String
+        var distanceMeters: Double
+        var band: BandSide
+        var tentative: Bool = false
+        var motionState: MotionState = .unknown
+    }
 
     /// A horizontal third of the scene. `nearestMeters` is the LiDAR floor for that third.
     struct Band: Sendable, Equatable {
@@ -68,6 +87,7 @@ struct PerceptionSnapshot: Sendable {
     /// binned into a band by its side mask. `cameraRunning` is `DepthService.isRunning`: when the
     /// camera is off, distances are stale and confidence drops to `low`.
     static func make(bands: BandDepths,
+                     sceneObjects: [SceneObject],
                      hazard: Hazard?,
                      route: RouteContext?,
                      cameraRunning: Bool) -> PerceptionSnapshot {
@@ -75,9 +95,20 @@ struct PerceptionSnapshot: Sendable {
         var center = Band(nearestMeters: bands.center)
         var right = Band(nearestMeters: bands.right)
 
-        if let hazard, let summary = objectSummary(for: hazard) {
-            // The tap is on the hazard's side (docs/12). A mask with no left/right reads as straight
-            // ahead, so it goes in the center band.
+        if !sceneObjects.isEmpty {
+            // Prefer the full CV scene: every detection placed in its band with its fused depth.
+            for object in sceneObjects {
+                let summary = ObjectSummary(label: object.label, distanceMeters: object.distanceMeters,
+                                            motionState: object.motionState, tentative: object.tentative)
+                switch object.band {
+                case .left: left.objects.append(summary)
+                case .center: center.objects.append(summary)
+                case .right: right.objects.append(summary)
+                }
+            }
+        } else if let hazard, let summary = objectSummary(for: hazard) {
+            // No CV scene (detector off or nothing found): fall back to the one fused hazard. The tap
+            // is on the hazard's side (docs/12); a mask with no left/right reads as straight ahead.
             if hazard.mask.contains(.left) {
                 left.objects.append(summary)
             } else if hazard.mask.contains(.right) {
@@ -87,13 +118,24 @@ struct PerceptionSnapshot: Sendable {
             }
         }
 
+        // Lead each band with its nearest object so the model hears what matters first.
+        let byDistance: (ObjectSummary, ObjectSummary) -> Bool = { a, b in
+            let da = a.distanceMeters > 0 ? a.distanceMeters : .greatestFiniteMagnitude
+            let db = b.distanceMeters > 0 ? b.distanceMeters : .greatestFiniteMagnitude
+            return da < db
+        }
+        left.objects.sort(by: byDistance)
+        center.objects.sort(by: byDistance)
+        right.objects.sort(by: byDistance)
+
         return PerceptionSnapshot(left: left, center: center, right: right, route: route,
                                   confidence: confidence(bands: bands, cameraRunning: cameraRunning))
     }
 
     private static func objectSummary(for hazard: Hazard) -> ObjectSummary? {
         let label = hazard.isPerson ? "person" : (hazard.label ?? "obstacle")
-        return ObjectSummary(label: label, distanceMeters: hazard.distanceMeters, motionState: .unknown)
+        return ObjectSummary(label: label, distanceMeters: hazard.distanceMeters,
+                             motionState: .unknown, tentative: false)
     }
 
     /// Bias confidence low when the camera is off or LiDAR returns are sparse, high when every band
@@ -137,8 +179,9 @@ struct PerceptionSnapshot: Sendable {
         guard !band.objects.isEmpty else { return "  <band side=\"\(name)\"\(attrs) />" }
         var out = "  <band side=\"\(name)\"\(attrs)>"
         for object in band.objects {
+            let tentative = object.tentative ? " tentative=\"true\"" : ""
             out += "\n    <object label=\"\(object.label)\" motion=\"\(object.motionState.rawValue)\"" +
-                   metersAttr(" distance_m", object.distanceMeters) + " />"
+                   metersAttr(" distance_m", object.distanceMeters) + tentative + " />"
         }
         out += "\n  </band>"
         return out

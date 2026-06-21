@@ -710,8 +710,20 @@ final class AppModel {
     /// The scene Claude reasons over, assembled from the LiDAR bands, the current fused hazard, and the
     /// route. Read on the main actor where all three already live.
     private func perceptionSnapshot() -> PerceptionSnapshot {
-        PerceptionSnapshot.make(bands: depth.bands, hazard: currentHazard(),
-                                route: routeContext(), cameraRunning: depth.isRunning)
+        // Bin every CV detection into a band using the same side convention the belt uses, and pair it
+        // with its LiDAR-fused depth, so Claude sees the whole scene (what is in each band and how
+        // close) rather than just the one nearest hazard.
+        let scene = depth.sceneDetections.map { detection -> PerceptionSnapshot.SceneObject in
+            let mask = PersonFusion.quadrant(horizontalNorm: detection.horizontalNorm)
+            let band: PerceptionSnapshot.BandSide =
+                mask.contains(.left) ? .left : (mask.contains(.right) ? .right : .center)
+            let distance = detection.depthMedianMeters ?? detection.depthMinMeters ?? -1
+            return PerceptionSnapshot.SceneObject(
+                label: detection.label, distanceMeters: distance, band: band,
+                tentative: detection.confidence < CitrusSquadConfig.visionTentativeConfidence)
+        }
+        return PerceptionSnapshot.make(bands: depth.bands, sceneObjects: scene, hazard: currentHazard(),
+                                       route: routeContext(), cameraRunning: depth.isRunning)
     }
 
     /// The route picture for the snapshot, read from `RouteEngine`'s published state. Nil when no
@@ -731,19 +743,33 @@ final class AppModel {
                                                remainingMeters: route.remaining, onRoute: true)
     }
 
-    /// The frozen rules both the drafter and the verifier obey. Frozen so it can be prompt-cached, and
-    /// load-bearing for safety: it is what stops Claude from claiming a clear path the LiDAR did not
-    /// confirm. Mirrors `PERCEPTION-AVOIDANCE-HANDOFF.md` §"The reasoning contract."
+    /// The frozen rules the describe drafter obeys. Frozen so it can be prompt-cached, and load-bearing
+    /// for safety: it is what stops Claude from claiming a clear path the LiDAR did not confirm and
+    /// teaches it to read the fused CV-plus-LiDAR scene. Mirrors
+    /// `PERCEPTION-AVOIDANCE-HANDOFF.md` §"The reasoning contract."
     static let reasoningContract = """
-    You write one short spoken line for a blind walker wearing a haptic navigation belt. You are given \
-    a structured scene snapshot in XML, not an image. Rules:
-    - Speak only what the snapshot supports. Never claim a band is clear unless its nearest distance \
-    says so, and never name an object the snapshot does not list.
-    - Recommend at most one action. Prefer a side the snapshot marks open; never send the walker into \
-    a blocked side.
-    - When confidence is low, say the path is uncertain rather than inventing detail.
-    - Keep it to one calm sentence, meant to be heard, not read. No preamble, no lists.
-    The belt already guides the walker from its own sensors; your line only adds spoken context.
+    You write one short spoken line describing the scene for a blind walker wearing a haptic navigation \
+    belt. You are given a structured snapshot in XML, not an image.
+
+    How to read it:
+    - The scene has three bands: left, center, right. A band may carry nearest_m, the closest distance \
+    the LiDAR measured in that third, and a list of objects the camera recognised, each with its own \
+    distance_m and sometimes tentative="true".
+    - A band whose nearest_m is small but lists no object means something is there the camera could not \
+    name: call it "something" on that side, do not guess what it is.
+    - A tentative object is an uncertain detection: hedge it ("there may be...") rather than stating it \
+    as fact.
+    - The distances are real sensor measurements, so you may use them, but say them plainly and \
+    roughly ("a couple of steps ahead", "right in front of you"), never as exact figures.
+
+    Rules:
+    - Describe only what the snapshot supports. Never claim a side is clear unless its nearest_m says \
+    so, and never name an object the snapshot does not list.
+    - Lead with whatever is closest or in the path. One calm sentence, meant to be heard, not read. No \
+    preamble, no lists.
+    - Describe the scene; do not tell the walker which way to move or whether to go. The walker and \
+    their cane decide that.
+    - When confidence is low, say the scene is unclear rather than inventing detail.
     """
 
     // MARK: - Decide loop

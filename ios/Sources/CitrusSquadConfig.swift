@@ -47,6 +47,10 @@ enum CitrusSquadConfig {
     static let visionMaxHz = 4.0
     /// Frames a person must persist in range before the cue fires.
     static let visionSettleFrames = 3
+    /// Detection confidence below which a CV object is marked tentative in the Claude scene, so the
+    /// describe tier hedges it ("there may be a bench") rather than asserting a shaky detection. Above
+    /// the `visionConfidenceThreshold` floor; between the two is "seen, but not sure."
+    static let visionTentativeConfidence: Float = 0.5
     /// Distance band past the threshold that keeps a firing cue alive, to stop edge flicker.
     static let visionHysteresisMeters = 0.3
     /// Minimum time between cue fire-or-clear transitions.
