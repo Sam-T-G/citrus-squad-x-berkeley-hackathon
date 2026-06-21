@@ -236,11 +236,15 @@ actor VoiceSession {
             ],
             "agent": [
                 "listen": ["provider": ["type": "deepgram", "model": "nova-3"]],
-                // Deepgram-managed OpenAI model (no endpoint, no key handed to Deepgram). The most
-                // reliably available managed think model. Claude is used for the V3 on-device
-                // evaluator with our own key, which is the cleaner Anthropic integration anyway.
+                // Claude as the Deepgram-managed think provider (no endpoint, no key handed to
+                // Deepgram, billed against the Deepgram credit). The model id is Deepgram's
+                // managed-Anthropic allowlist string, NOT the native API id: claude-4-5-haiku-latest,
+                // not claude-haiku-4-5. Haiku keeps the think pass fast; the in-function tiers still
+                // call Claude directly with our own key for the heavier describe and vision work.
+                // VERIFY ON DEVICE: confirm FunctionCallRequest still fires with the anthropic
+                // provider before trusting the tier system, and watch the think latency vs gpt-4o-mini.
                 "think": [
-                    "provider": ["type": "open_ai", "model": "gpt-4o-mini"],
+                    "provider": ["type": "anthropic", "model": "claude-4-5-haiku-latest"],
                     "prompt": Self.systemPrompt,
                     "functions": VoiceFunction.allSpecs,
                 ],
