@@ -3,8 +3,8 @@
 Read this first. It is the single source of truth for where the project is right now, so any agent (or teammate) can pick up without re-reading the whole repo. It is a living document: whoever lands meaningful work updates it in the same pass. The keep-current rule is at the bottom.
 
 **Last updated:** 2026-06-21
-**Branch:** `sam/ios-app-base` (ahead of `origin/sam/ios-app-base` by 4 commits, not yet pushed)
-**Latest commit:** `3b699a3` Add sponsor, voice, bridge, and navigation handoff docs
+**Branch:** `sam/ios-app-base` (in sync with `origin/sam/ios-app-base`)
+**Latest commit:** `3c83f75` Generalize vision tier from person-only to navigation classes
 
 **Heads-up on uncommitted work:** the working tree is now clean. Everything that was loose is committed: the early-warning tier wiring (`990a60e`), the `server/` belt-bridge fallback (`34a7c56`), and the sponsor/voice/bridge/navigation handoff docs (`3b699a3`), on top of the prior `1b7e948` (Voice layer, `Secrets`, `BearingTracker`, `EventLog`). These four commits are local-only; `git push` when ready to share with the team.
 
