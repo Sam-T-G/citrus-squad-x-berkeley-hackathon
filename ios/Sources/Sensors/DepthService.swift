@@ -28,6 +28,14 @@ final class DepthService: NSObject {
     /// Kept out of observation so it stays a plain stored property the delegate can mutate.
     @ObservationIgnored nonisolated(unsafe) private var frameTick = 0
 
+    /// Optional callback for the CoreML object detection pipeline. Called on ARKit's serial queue
+    /// with every processed frame (same cadence as depth sampling, ~10 Hz). The callback receives
+    /// the RGB pixel buffer, the depth pixel buffer (may be nil), and the freshly-sampled band
+    /// depths so the CV layer can fuse without a separate main-actor hop.
+    /// Stored nonisolated(unsafe): set on the main actor before the session runs, read only on
+    /// the ARKit callback queue, so there is no real data race.
+    @ObservationIgnored nonisolated(unsafe) var onFrame: ((CVPixelBuffer, CVPixelBuffer?, BandDepths) -> Void)?
+
     private(set) var isRunning = false
     private(set) var bands = BandDepths()
     private(set) var lastError: String?
@@ -73,6 +81,7 @@ extension DepthService: ARSessionDelegate {
         frameTick &+= 1
         guard frameTick % 6 == 0, let depth = frame.sceneDepth?.depthMap else { return }
         let sampled = Self.bandedNearest(in: depth)
+        onFrame?(frame.capturedImage, depth, sampled)
         Task { @MainActor in self.bands = sampled }
     }
 

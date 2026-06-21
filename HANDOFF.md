@@ -81,7 +81,7 @@ M5 green: the replay demo drives the belt, every turn cue fires on the correct s
 
 # CV Layer Handoff
 
-Last updated: 2026-06-20
+Last updated: 2026-06-20 (updated mid-hack)
 
 ## What this covers
 
@@ -228,38 +228,72 @@ All 17 tests pass. YOLO is mocked so no model download is needed to run tests.
 | `cv/webcam_test.py` | Done | Local smoke test against laptop webcam |
 | `server.py` | Done | Uvicorn entry point |
 | `tests/` | Done | 17 unit tests, all passing |
+| `ios/Sources/Perception/ObjectDetectionService.swift` | Done (needs model) | CoreML inference + LiDAR fusion + motion tracking, settle/refractory, reports via `VisionHazardSource`. Exposes `movingObjects: [TrackedObject]` for Claude hook. |
+| `ios/Sources/Perception/CollisionPredictor.swift` | Done | Pure threat/action logic; motion-aware `assess(tracked:bands:)` overload prioritizes approaching objects |
+| `ios/Sources/Perception/MotionParameters.swift` | Done | `MotionState` + `TrackedObject` types; all classification thresholds in one place |
+| `ios/Sources/Perception/MotionTracker.swift` | Done | Cross-frame object tracker; computes approach velocity + lateral rate; settle filter before confirming `MotionState` |
 
-## Planned: on-device CoreML (no Wi-Fi)
+## On-device CoreML path (built — pending model file)
 
-The Wi-Fi server is a working prototype. The demo target is everything running on the phone.
+`ios/Sources/Perception/ObjectDetectionService.swift` is wired and compiling under Swift 6 strict concurrency. The Wi-Fi server still works as a fallback, but the demo target is everything on the phone.
 
-**Steps:**
+**How it works:**
 
-1. Export the CoreML model:
-   ```bash
-   python3 -c "from ultralytics import YOLO; YOLO('yolov8n.pt').export(format='coreml')"
-   ```
-   Drag `yolov8n.mlpackage` into the Xcode target.
+`DepthService` now exposes `onFrame: ((CVPixelBuffer, CVPixelBuffer?, BandDepths) -> Void)?` called on ARKit's serial queue at ~10 Hz. `ObjectDetectionService.start(depthService:hazard:)` registers this callback in `AppModel.init()` and loads the model async in the background.
 
-2. **`ObjectDetectionService.swift`** (Sam's side) — new Swift service that:
-   - Subscribes to frames from `DepthService` via a callback (add `var onFrame: ((ARFrame) -> Void)?` to `DepthService`)
-   - Runs `VNCoreMLRequest` on `ARFrame.capturedImage`
-   - Scales each bounding box from RGB to depth map coordinates (same math as `pipeline.py _fuse`)
-   - Samples inner 50% of the scaled box
-   - Calls `VisionHazardSource.report()` with the nearest threat, `clear()` when nothing in path
+Each callback:
+1. Skips every other call (runs at ~5 Hz to stay off thermals)
+2. Runs `VNCoreMLRequest` on `ARFrame.capturedImage` with `.right` orientation (corrects landscape sensor to portrait)
+3. Filters to `navigationClasses` at ≥ 0.35 confidence
+4. Maps each bounding box's horizontal center to the matching LiDAR band depth
+5. Picks the nearest in-range detection and constructs a `Hazard`
+6. Applies settle (3 consecutive frames) + refractory (10 frames, ~1 s) before calling `VisionHazardSource.report()` / `clear()`
 
-3. Wire into `AppModel` (Sam's side): add `let objectDetection = ObjectDetectionService()`, start/stop alongside `DepthService`.
+`AppModel.currentHazard()` already polls `vision.currentHazard`, so the belt and arbitration require no changes.
 
-## Planned: collision prediction and action layer
+**To activate (one-time):**
 
-Pure logic on top of raw detections. Fully testable with no sensors.
+```bash
+python3 -c "from ultralytics import YOLO; YOLO('yolov8n.pt').export(format='coreml', nms=True)"
+```
 
-**New types:**
+Drag `yolov8n.mlpackage` into the Xcode project Sources group and check "Add to target: CitrusSquad." The `nms=True` flag is required — without it the model outputs raw tensors instead of `VNRecognizedObjectObservation` and nothing will be detected.
+
+Until the model is bundled, `objectDetection.modelLoaded` stays `false` and the service is silent (safe failure).
+
+## Motion tracking layer (built)
+
+`MotionParameters.swift` + `MotionTracker.swift` — parameter-based cross-frame tracking, no AI.
+
+**Philosophy:** same approach as the Mira project. Explicit named thresholds in `MotionParameters`, no model, fully testable by feeding synthetic frame sequences. Claude fires only when `motionState == .approaching`; stationary objects never touch Claude.
+
+**How it works:**
+
+Each pipeline frame, `ObjectDetectionService` passes the `[CVDetection]` array to `MotionTracker.update(detections:frameIndex:)`. The tracker:
+
+1. Matches each detection to an existing track by label + horizontal proximity (within `matchRadiusNorm = 0.15`)
+2. Appends depth and horizontal position to per-object ring buffers (6 frames deep)
+3. Computes approach rate `(oldest_depth - newest_depth) / elapsed` and lateral rate
+4. Classifies: approaching if rate ≥ 0.15 m/s, moving if lateral rate ≥ 0.04 norm/s, else stationary
+5. Applies a settle filter (3 consecutive matching frames before confirming)
+6. Expires tracks not seen for 8 frames
+
+Returns `[TrackedObject]` with `motionState`, `approachRateMetersPerSecond`, and `lateralRateNormPerSecond` per object.
+
+**Tuning:** all thresholds are in `MotionParameters.swift` with named constants. Change a value, rebuild, test. No model retraining.
+
+**Claude hook:** `ObjectDetectionService.movingObjects: [TrackedObject]` is exposed on the `@MainActor` and contains only `approaching` and `moving` objects. Wire Claude identification here when ready — stationary objects are excluded by design.
+
+## Collision prediction and action layer (built)
+
+`ios/Sources/Perception/CollisionPredictor.swift` — pure logic, no sensors, no side effects.
+
+**Types shipped:**
 
 ```swift
-enum ThreatLevel { case none, advisory, warning, urgent }
+enum ThreatLevel: Sendable { case none, advisory, warning, urgent }
 
-enum NavigationAction {
+enum NavigationAction: Sendable, Equatable {
     case clear
     case stepLeft(paces: Int)
     case stepRight(paces: Int)
@@ -267,44 +301,233 @@ enum NavigationAction {
     case slowDown
 }
 
-struct ObstacleThreat {
+struct ObstacleThreat: Sendable {
     var label: String
     var distanceMeters: Double
     var horizontalNorm: Double   // 0.0 = far left, 1.0 = far right
     var level: ThreatLevel
     var action: NavigationAction
 }
+
+struct CVDetection: Sendable {
+    var label: String
+    var confidence: Float
+    var horizontalNorm: Double
+    var distanceMeters: Double   // -1 if unknown
+}
 ```
 
-**Decision logic in `CollisionPredictor`:**
+**`CollisionPredictor.assess(detections:bands:)`** — entry point. Fuses LiDAR band depths into each detection, filters to things within 5 m, picks the nearest, grades it, and picks a dodge direction by checking which LiDAR band has clear space.
 
-1. Is it in path? `horizontal_norm` in `[0.35, 0.65]` = dead ahead
-2. How urgent? `< 1.5m` = urgent, `1.5–3m` = warning, `3–5m` = advisory
-3. Which side is clear? Check LiDAR band readings from `DepthService` for open space
-4. Paces to clear: `ceil(clearance_needed / 0.75)` where clearance = object half-width + 0.5m margin
-5. Output: belt tap direction + pace count for audio layer
+`AppModel.objectDetection.currentThreat` exposes the latest `ObstacleThreat?`. Josh's audio layer can read it from there and speak "person ahead, step left 2 paces."
 
-**Concrete example (pole at 2m, dead center):**
+**Concrete example (pole at 2 m, dead center):**
 ```
-horizontal_norm = 0.51  → in path
-depth_min_m = 2.0       → warning
-label = "pole"          → static
-left LiDAR band: clear  → step left
-paces = ceil(0.54 / 0.75) = 1
+horizontal_norm = 0.51  → center band → centerMass mask
+depth = 2.0 m           → warning
+left LiDAR band: clear  → stepLeft(paces: 1)
 
-→ StepLeft(paces: 1)
-→ Belt: left tap
-→ Audio: "pole ahead, step left 1 pace"
+Belt fires: centerMass tap
+Audio can say: "pole ahead, step left 1 pace"
 ```
+
+## Object identification gap
+
+**What YOLO can identify:** the 80 COCO classes — people, bikes, cars, chairs, benches, bags, animals, etc.
+
+**What YOLO cannot identify:** poles, bollards, trash cans, street lights, parking meters, fire hydrants (beyond the COCO one), construction barriers. These are the objects blind pedestrians most commonly walk into.
+
+**Why the parameter library doesn't fix this:** `MotionParameters` classifies motion, not object type. It tells you a detected object is approaching — it cannot tell you what that object is. And it only runs on top of what YOLO already found. If YOLO doesn't detect a pole, the parameter library never sees it.
+
+**What handles unidentified stationary objects today:** LiDAR. It fires the belt tap regardless of object type — it just can't produce a spoken label. The wearer knows something is close on a specific side but not what it is.
+
+**The gap for a blind user:** the audio label matters. "Pole on your left" is more useful than a tap with no context. Without identification, the belt tells you *where* but not *what*.
+
+## Claude Vision integration (planned for demo)
+
+**Decision:** use Claude Vision to identify stationary objects detected by LiDAR, and moving objects tracked by `MotionTracker`. The belt fires immediately from LiDAR distance (on-device, instant). Claude names the object afterward for the audio layer — fire and forget, never blocks the belt.
+
+**Approach rate and latency:** Haiku 4.5 with a small cropped image returns in ~300-500ms over Wi-Fi. By the time text-to-speech finishes speaking, the round trip is ~700ms. Acceptable for audio narration; unacceptable for belt timing (which is why Claude never touches belt logic).
+
+**Demo strategy — pre-cache scout mode:** for a blind user, network latency during the demo is a reliability risk. The planned approach is to walk the demo route beforehand with the app running, identify and cache every stationary object on the path via Claude, then during the actual demo speak all labels from cache instantly with zero network dependency.
+
+```
+Scout pass (before demo):
+  LiDAR fires → Claude Vision → "trash can" → cache at (band: center, dist: ~2.1m)
+
+Demo:
+  LiDAR fires → cache hit → audio says "trash can on your left" instantly
+```
+
+**What still needs building:**
+- `SceneCache.swift` — stores identified objects by horizontal band + approximate distance. Keyed loosely (±0.5m, same band) so small position variance still hits.
+- `ClaudeVisionIdentifier.swift` — crops `ARFrame.capturedImage` at the LiDAR band position, sends to Haiku 4.5, returns a plain-English label. Called once per new detection, result written to `SceneCache`.
+- Wire into `AppModel` tick loop: on new LiDAR hazard, check cache first, call Claude if miss.
+- Audio layer reads the label from the cache and speaks it.
+
+**Post-hackathon:** replace Claude Vision with an on-device CoreML model trained on Mapillary Vistas or Open Images V7 (600+ classes including street infrastructure). Same architecture, no network dependency, works everywhere.
+
+## Claude Vision pipeline options (latency analysis)
+
+Four approaches, ranked by complexity:
+
+**1. Direct phone → Claude API**
+iPhone calls the Anthropic API directly. Crop the camera frame to the hazard region, resize small, send to Haiku 4.5.
+- Latency: ~300-500ms on good Wi-Fi
+- Complexity: lowest — one URLSession call
+- Risk: demo venue Wi-Fi dependency. If it drops, no labels (belt still works)
+- API key lives in `Local.xcconfig` same as the GitHub token
+
+**2. Direct + location cache (best latency after first detection)**
+Same as above but cache the label by horizontal band + approximate distance. If LiDAR fires at center-band ~2m again, speak the cached label instantly instead of calling Claude again. Most objects at the demo site won't move.
+
+```
+First time:  LiDAR fires → call Claude → "trash can" → cache it
+Next time:   LiDAR fires → cache hit → speak instantly (~0ms)
+```
+
+After a few seconds of walking the same space, almost everything is cached. This is the highest-impact optimization.
+
+**3. Phone → local Mac proxy → Claude API**
+Phone sends the cropped image to a small server on the Mac over local Wi-Fi. Mac calls Claude, returns the label. `cv/ingest.py` already exists and could handle this.
+- Adds ~1ms for the local hop, saves nothing vs option 1
+- Only worth it if the Mac is in the loop for monitoring or logging anyway
+
+**4. Pre-identify the demo environment (zero latency)**
+Walk the demo route beforehand with the app running. Identify and cache every stationary object on the path. By demo time, nothing calls Claude during the actual demo — all cache hits.
+- Zero latency during demo
+- Only works if the environment is fixed and you can scout it first
+- Very viable for a controlled demo loop
+
+**Decision for the hackathon: options 1 + 2 together, with option 4 as the demo safety net.**
+
+Direct API call for new detections, cache hits for anything seen before. Scout the route beforehand to pre-populate. If the cache covers everything on the demo path, Claude is never called live.
+
+**Why audio reliability matters more for a blind user:**
+
+For a sighted person demoing the tech, a 400ms delay or a dropped Wi-Fi label is fine. For someone actually navigating, it isn't. The belt tap from LiDAR is the safety signal — it fires instantly, on-device, no network. The audio label is context ("trash can on your left"). If the label is slow or missing, the user still knows something is there and which side. But the label is how they decide whether to dodge or just walk past.
+
+The scout + cache strategy (option 4) is the honest demo story: the system narrates the environment in real time with zero visible network dependency because it already knows what's there.
+
+**Post-hackathon target:** replace Claude Vision with an on-device CoreML model (Mapillary Vistas or Open Images V7, 600+ classes including street infrastructure). No network, no latency, works everywhere.
+
+## CV model landscape — what else exists and why we're not switching today
+
+Research as of 2026-06-20. Framed against the actual constraint: on-device CoreML, thermal budget is the #1 demo risk, ~5 Hz, and LiDAR already owns "where something is." CV's real job is "what is it."
+
+### The actual gap
+
+The problem is vocabulary, not accuracy. YOLOv8n finds COCO movers (person, car, bike, dog) well enough, and LiDAR fires the belt regardless of class. COCO's 80 classes don't include poles, bollards, trash cans, parking meters, street lights, construction barriers, or curbs, which are what blind pedestrians actually walk into. The model comparison below weights on street-infrastructure class coverage and thermal fit, not raw mAP.
+
+### Model families
+
+**Newer closed-set YOLO (v11n / v12n).** Drop-in upgrades. YOLOv12-S hits 48.0% mAP at 2.6 ms/image, ~1% better than v11 at equal latency. Nano variants stay CoreML-friendly. Ships the same 80 COCO classes. Upgrading gets you a small speed and accuracy bump and zero new street-infrastructure labels. Lowest effort, lowest payoff for the gap.
+
+**Open-vocabulary detectors (YOLO-World / YOLOE, Grounding DINO).** These take a text vocabulary at export time, so you can ask for "bollard, trash can, parking meter" without retraining. YOLO-World's "prompt-then-detect" bakes the embeddings into the weights before export, so the text encoder is gone at inference and speed stays real-time (~35 AP on LVIS at 52 FPS on V100; small variant ~10 ms on edge). Most direct fix for the vocabulary gap in theory. Friction: CoreML export of YOLO-World is fiddly (RepVL-PAN doesn't always convert clean), the smallest variant is "small" (~12M params vs v8n's 3M), and you can't change the vocabulary at runtime. Grounding DINO is stronger open-vocab but too heavy for the phone at all.
+
+**Street-scene segmentation (Mapillary Vistas / Cityscapes).** The family actually built for the domain. Mapillary Vistas has 124 classes: pole, utility pole, street light, curb, curb cut, crosswalk, traffic sign front/back, traffic light variants. Cityscapes covers ~19 classes (road, sidewalk, pole, sign, person). Real-time edge models exist: SegFormer-B0 (3.8M params, 76.2% mIoU on Cityscapes, 47 FPS at 512px) and PIDNet-S (78.6% mIoU at 93 FPS on Cityscapes), with a 2025 PIDNet-LW cutting params 47%. Output is per-pixel masks, not labeled boxes, so fusing with LiDAR bands and the `TrackedObject` pipeline is more integration work. No polished off-the-shelf CoreML package. This is the strong post-hackathon target, not a Saturday-night swap.
+
+**VLM identification (Claude Vision, current plan).** Open vocabulary by description, best label quality, zero training. Haiku 4.5 at ~300-500ms over Wi-Fi with scout+cache as the demo safety net. Only weakness is network dependency, already neutralized by the scouting strategy.
+
+### Recommendation
+
+Don't retrain or swap models during the hack window.
+
+- Keep YOLOv8n on-device for COCO movers fused with LiDAR. It's proven and compiling.
+- Cover the street-infrastructure gap with Claude Vision as planned.
+- If there's a spare hour, prototype YOLO-World with a fixed street vocabulary (see "YOLO-World pipeline" below), but hard-timebox the CoreML export and keep v8n as the fallback.
+- Post-hackathon: commit to Mapillary Vistas as the on-device replacement for Claude. It's the only pretrained source whose vocabulary matches the blind-navigation domain.
+
+### Summary table
+
+| Model / approach | Paradigm | Street-infra coverage | On-device CoreML | Latency (nano/edge) | New labels without retrain | Hackathon fit |
+|---|---|---|---|---|---|---|
+| YOLOv8n (current) | Closed-set det | COCO 80 — no poles/bollards/cans | Yes, proven | ~5 Hz wired | No | Baseline, keep |
+| YOLOv11n / v12n | Closed-set det | Same COCO 80 | Yes, CoreML-friendly | ~2.6 ms/img (S) | No | Easy bump, low payoff |
+| YOLO-World / YOLOE | Open-vocab det (frozen at export) | Any prompted class | Possible, export fiddly, runs hotter | ~10 ms edge (S) | Yes, at export time | Risky, worth a timebox |
+| RT-DETR / RF-DETR | Transformer det | COCO/custom | Heavier, export harder | Slower than v12 on edge | No unless trained | Skip |
+| Mapillary Vistas seg | Semantic/instance seg | Best: 124 classes incl pole, curb, crosswalk, street light | Convertible, you build it | Seg is heavier | No (pretrained on these classes) | Post-hack target |
+| Cityscapes seg (SegFormer-B0 / PIDNet) | Semantic seg | ~19 classes: road, sidewalk, pole, sign | Yes, real-time edge models exist | 47 FPS @ 512 (SegFormer-B0) | No | Post-hack option |
+| Open Images V7 detector | Closed-set det | 600 classes, good street coverage | Convertible, you build it | Depends on backbone | No | Post-hack option |
+| Grounding DINO | Open-vocab det | Excellent | No, too big | Server-only | Yes | Server fallback only |
+| Claude Vision (Haiku 4.5) | VLM identify | Unlimited by description | Network only | ~300-500ms + TTS | Yes | Best gap-filler now |
+| Apple Vision built-in | Detect/classify | Animals only (cats/dogs) | Yes, native | Fast | No | Not useful here |
+
+## YOLO-World implementation pipeline
+
+Documented here for the team if the timebox experiment gets greenlit.
+
+### The key thing to understand
+
+"Open vocabulary" applies at export time, not at inference time. Once you call `set_classes()` and export, the text encoder is gone. On the phone you're running a wider closed-vocab detector, not a live NLP system. That's what keeps it fast enough to consider.
+
+### Step 1 — Python export (one-time, replaces the current v8n export)
+
+```python
+from ultralytics import YOLOWorld
+
+model = YOLOWorld('yolov8s-worldv2.pt')  # smallest available — no nano variant exists
+
+# Bakes embeddings into weights; text encoder is gone after this
+model.set_classes([
+    "person", "bicycle", "car", "motorcycle", "bus", "truck",
+    "dog", "cat",
+    "pole", "bollard", "trash can", "garbage bin",
+    "parking meter", "street light", "fire hydrant",
+    "traffic cone", "construction barrier", "newspaper box",
+    "bench", "stop sign", "traffic light", "crosswalk",
+])
+
+model.export(format='coreml', nms=True)
+# outputs yolov8s-worldv2.mlpackage
+```
+
+### Step 2 — Xcode (identical to v8n)
+
+Drag `yolov8s-worldv2.mlpackage` into the Sources group, check "Add to target: CitrusSquad." No other Xcode changes.
+
+### Step 3 — Swift (one constant changes)
+
+```swift
+// ObjectDetectionService.swift — only navigationClasses changes
+private let navigationClasses: Set<String> = [
+    "person", "bicycle", "car", "motorcycle", "bus", "truck",
+    "dog", "cat",
+    "pole", "bollard", "trash can", "garbage bin",
+    "parking meter", "street light", "fire hydrant",
+    "traffic cone", "construction barrier", "bench",
+    "stop sign", "traffic light",
+]
+```
+
+`VNCoreMLRequest` → `VNRecognizedObjectObservation` path stays identical. `MotionTracker`, `CollisionPredictor`, band fusion — untouched.
+
+### Friction points
+
+**Model size.** No YOLO-World-nano. Smallest is "small" (~12M params vs v8n's 3M). Test whether it stays within thermal headroom at 5 Hz or needs to drop to 2-3 Hz. The thermal soak isn't run yet, so this is unknown.
+
+**CoreML export reliability.** RepVL-PAN is less battle-tested than vanilla v8 for CoreML. `nms=True` is still required. If it fails you get raw tensors and zero detections — same failure mode as forgetting `nms=True` on v8n. Do a test export on the Mac before committing to this path.
+
+**Class name sensitivity.** YOLO-World learned text embeddings, so `"trash can"` and `"trashcan"` may behave differently. Test synonyms against `cv/webcam_test.py` and pick whichever hits.
+
+**Frozen vocabulary.** Can't add a class mid-demo. To change the set, re-run `set_classes()` and re-export.
+
+### Time estimate
+
+Clean export: ~1 hour (export, drag into Xcode, update the constant, webcam test). Fiddly CoreML export: 2-3 hours. That's the timebox. If the export doesn't cooperate, fall back to v8n + Claude Vision.
 
 ## Open items
 
-- [ ] Implement `ObjectDetectionService.swift` (CoreML + ARKit frame subscription)
-- [ ] Implement `CollisionPredictor.swift` + `NavigationAction.swift` + `ThreatAssessment.swift`
-- [ ] Export `yolov8n.mlpackage` and add to Xcode target
-- [ ] Wire `ObjectDetectionService` into `AppModel`
-- [ ] Confirm ARFrame depth map resolution on iPhone 15 Pro Max (assumed 256x192)
-- [ ] Tune `confidence_threshold` on real footage (currently 0.35)
-- [ ] Tune `depth_crop_ratio` on real footage (currently 0.5)
-- [ ] Confirm wire format between Python server and iOS sender if Wi-Fi path is kept as fallback
-- [ ] Add keep-alive / ping-pong to the `/haptics` WebSocket if the controller idles
+- [x] Implement `ObjectDetectionService.swift` (CoreML + ARKit frame subscription via `DepthService.onFrame`)
+- [x] Implement `CollisionPredictor.swift` — pure threat/action logic; motion-aware `assess(tracked:bands:)` overload
+- [x] Implement `MotionParameters.swift` — parameter library for motion classification
+- [x] Implement `MotionTracker.swift` — cross-frame object tracker, approach velocity, settle filter
+- [x] Wire `ObjectDetectionService` into `AppModel` (`objectDetection.start(depthService:hazard:)` in `init`)
+- [ ] Export `yolov8n.mlpackage` and add to Xcode target (one-time: `python3 -c "from ultralytics import YOLO; YOLO('yolov8n.pt').export(format='coreml', nms=True)"`, drag into Sources group, check "Add to target")
+- [ ] Build `SceneCache.swift` — keyed object label cache by LiDAR band + approximate distance
+- [ ] Build `ClaudeVisionIdentifier.swift` — crops frame at hazard band, calls Haiku 4.5, writes to cache
+- [ ] Wire Claude identification into `AppModel` tick loop — cache check first, Claude call on miss
+- [ ] Scout the demo route with the app to pre-populate the cache before judging
+- [ ] Confirm ARKit depth map x-axis = left/right in portrait mount. Walk toward something on the left, verify `depth.left` drops and belt fires left.
+- [ ] Tune `MotionParameters` thresholds on real footage — `approachThresholdMetersPerSecond` and `matchRadiusNorm` are the most likely to need adjustment
+- [ ] Confirm `VNRecognizedObjectObservation` output from the CoreML model — requires NMS export. If nothing is detected, re-export with `nms=True`
