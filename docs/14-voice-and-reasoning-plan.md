@@ -21,6 +21,76 @@ This satisfies the Deepgram requirement (we use a Deepgram product as the core i
 
 Camera vision tools (`read_text`, `locate_entrance`) depend on on-device vision, which is a stretch in [`05-vision-tier.md`](05-vision-tier.md). They ship as stubs that say "I cannot do that yet" until the vision tier lands. The Fetch transactional tier is a separate doc and a separate owner. Continuous turn-by-turn stays on the belt and is untouched by this layer.
 
+## As-built (verified on device, 2026-06-21)
+
+The sections below this one are the original design intent. This section is what actually shipped
+after a full on-device bring-up at the hackathon. Where the two disagree, this section wins.
+
+**Status: working end to end on the demo phone.** Tap to talk, speak a command, the agent
+transcribes it, calls an on-device function, and speaks the answer out of the loud speaker.
+Speech-to-text, function calling, live location, and the navigation link are all live.
+
+**Think tier is Deepgram-managed `gpt-4o-mini`, not Claude.** The plan ran Claude Haiku as the agent
+LLM. On the account in use, `claude-4-5-haiku-latest` came back `INVALID_SETTINGS: model not
+available`, so the think tier is the Deepgram-managed OpenAI model `gpt-4o-mini` (`provider.type`
+`open_ai`), which needs no key of ours. Claude is reserved for the V3 on-device evaluator with our
+own Anthropic key, which is the cleaner Anthropic integration anyway. Listen is `deepgram` `nova-3`;
+speak is `deepgram` `aura-2-thalia-en`.
+
+**Settings-schema corrections the plan got wrong.**
+
+- A function is client-side by *omitting* its `endpoint`. There is no `client_side` flag; sending
+  one fails the whole Settings message with `UNPARSABLE_CLIENT_MESSAGE`.
+- Endpoint `wss://agent.deepgram.com/v1/agent/converse`, header `Authorization: Token <key>`. Correct.
+- Verified server events: `Welcome`, `SettingsApplied`, `ConversationText` (role user / assistant),
+  `FunctionCallRequest` (a `functions` array, each with `id`, `name`, and `arguments` as a JSON
+  string), `UserStartedSpeaking`, `AgentAudioDone`, `Error`, `History`. We answer a call with a
+  `FunctionCallResponse` carrying `id`, `name`, `content`.
+
+**Turn model is continuous streaming, not stop-audio-on-release.** The plan's `finishTurn` stopped
+the mic on release; Deepgram reads that as `CLIENT_MESSAGE_TIMEOUT` ("did not receive audio"). The
+Voice Agent wants a continuous stream and finalizes the turn itself with its own voice-activity
+detection when the speaker pauses. So the mic streams from start to stop, and the agent answers on a
+pause. `finishTurn` was removed.
+
+**Interaction is tap-to-toggle with audio cues.** Hold-to-talk was replaced. Tap to start (begin-
+record tone, system sound 1113, plus a haptic), speak, then wait; the agent answers on a pause (end-
+record tone, 1114, when it starts processing). Tap again while active to cancel. This is also
+friendlier to VoiceOver than a hold gesture. Labels cycle Tap to talk / Connecting / Listening /
+Thinking / Speaking.
+
+**Echo is handled in software.** With a plain audio mode there is no hardware echo cancellation, so
+the agent could transcribe its own voice. An `agentSpeaking` flag mutes the outgoing mic from the
+first TTS chunk until `AgentAudioDone`, which stops the loop.
+
+**Audio routes to the loud speaker.** `.voiceChat` / `.videoChat` modes make iOS treat the session
+as a phone call and route to the quiet earpiece. The session uses plain `.default` mode with
+`.defaultToSpeaker` and an explicit `overrideOutputAudioPort(.speaker)`. Input is 16 kHz linear16,
+output 24 kHz linear16.
+
+**Functions as shipped:** `set_destination`, `route_status`, `where_am_i` (new), `describe_surroundings`,
+`recalibrate`, `stop`. `read_text` and `locate_entrance` stay out, because the camera is exclusive
+with the ARKit LiDAR safety reflex.
+
+**`where_am_i`** reverse-geocodes the live GPS fix (CLGeocoder) to a spoken place, for example "You
+are near University of California, Berkeley." Location starts at launch so a fix is ready.
+
+**`set_destination` is wired to real navigation.** It resolves the spoken place with MKLocalSearch
+(presets first, duplicate chain results collapsed by name), builds a real route to those coordinates
+(Google Directions when a Maps key is set, otherwise a direct origin-to-destination line), and drives
+it off the wearer's live GPS and compass (`startLiveWalk`), not the simulator. The belt and the map
+go to the actual place, based on where the wearer really is.
+
+**Milestones V0 through V4 are done on device.** V0 mic-to-transcript, V1 a function round-trip, V2 a
+spoken destination starting a live route, V3 surroundings narration (LiDAR-grounded; the Claude
+draft-and-verify pass is still a follow-up), V4 tap-to-toggle with the cancel path and the audio
+cues. V5 (camera tools) stays out by design.
+
+**Blindspots resolved this pass:** the earpiece audio routing, the echo loop, the place-name gap, and
+the turn timeout. Still open: the Claude draft-and-verify evaluator for safety-relevant narration
+(the depth of V3), calibration-on-start for the live walk so body heading is right at the chest
+mount, and pre-warming the socket so the first tap connects instantly.
+
 ## The one hard rule, restated
 
 Nothing here touches the LiDAR obstacle reflex in [`12-perception-and-safety-design.md`](12-perception-and-safety-design.md). The reflex is local and instant. This layer is cloud, conversational, and allowed to be slow and to fail. If the voice layer dies mid-walk, the belt keeps guiding and the reflex keeps firing.
