@@ -959,10 +959,12 @@ final class AppModel {
             return route.currentCue
         case .live:
             // Field walk: follow the route from the real GPS fix, steering off the resolved body
-            // heading (GPS course while moving, accuracy-gated compass when stopped). resolveLiveHeading
-            // also feeds the calibration walk, so call it every tick even before we are calibrated.
-            // Until the mount offset locks, withhold the turn cue so the belt never opens on a
-            // few-degrees-off heading; the wearer just walks a few steps and it engages.
+            // heading (GPS course while moving, accuracy-gated compass when stopped).
+            // Progressive calibration: lock provisionally the moment Live starts so cues flow at once
+            // (no "Calibrating" wall indoors or on the bench). A straight walk then refines the offset
+            // to the accurate value in the background, with no manual step. resolveLiveHeading feeds
+            // that refinement every tick.
+            if !calibrator.isLocked { calibrator.lockManually() }
             let heading = resolveLiveHeading()
             guard let fix = liveGeoPoint, isHeadingCalibrated, let heading else { return nil }
             route.updateRoute(location: fix, phoneHeading: heading, applyCalibration: false)

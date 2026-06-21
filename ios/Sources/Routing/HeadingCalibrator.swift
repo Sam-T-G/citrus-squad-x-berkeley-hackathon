@@ -42,8 +42,13 @@ struct HeadingCalibrator: Equatable, Sendable {
     private(set) var state: State = .collecting(progress: 0)
     /// Recent compass-minus-course candidates, newest last, capped at `samplesNeeded`.
     private var candidates: [Double] = []
+    /// True only after a confident walking lock. A provisional (manual) lock leaves this false so the
+    /// walk can still refine the offset; a refined lock is final.
+    private var refined = false
 
     var isLocked: Bool { if case .locked = state { return true } else { return false } }
+    /// Locked, but on the provisional (compass-as-forward) offset, still open to a walking refinement.
+    var isProvisional: Bool { isLocked && !refined }
     var mountOffset: Double? { if case .locked(let offset) = state { return offset } else { return nil } }
     /// 0...1 toward a lock, for a progress readout.
     var progress: Double {
@@ -58,7 +63,9 @@ struct HeadingCalibrator: Equatable, Sendable {
     /// window is full and the samples agree (a straight, settled walk), so it never locks mid-turn.
     mutating func ingest(course: Double, courseAccuracy: Double, speed: Double,
                          trueHeading: Double, headingAccuracy: Double) {
-        if case .locked = state { return }
+        // A refined (walked) lock is final. A provisional lock keeps gathering so the walk can upgrade
+        // it to the accurate offset, and a plain collecting state gathers as before.
+        if refined { return }
 
         let usable = speed >= config.minSpeedMetersPerSecond
             && course >= 0 && (courseAccuracy < 0 || courseAccuracy <= config.maxCourseAccuracyDegrees)
@@ -71,7 +78,9 @@ struct HeadingCalibrator: Equatable, Sendable {
         if candidates.count >= config.samplesNeeded,
            Self.spread(candidates) <= config.consistencyToleranceDegrees {
             state = .locked(offsetDegrees: Self.circularMean(candidates))
-        } else {
+            refined = true
+        } else if !isLocked {
+            // Hold a provisional lock while gathering; only advance the progress when not yet locked.
             state = .collecting(progress: candidates.count)
         }
     }
@@ -79,15 +88,17 @@ struct HeadingCalibrator: Equatable, Sendable {
     /// Restart calibration (the Recalibrate action, or the start of a fresh live walk).
     mutating func reset() {
         candidates.removeAll()
+        refined = false
         state = .collecting(progress: 0)
     }
 
-    /// Lock immediately with a given mount offset, for the manual "I'm facing forward" capture that
-    /// works stationary and indoors, where the walk-based lock can never gather GPS-course samples.
-    /// The default offset of 0 trusts the compass as body-forward (it skips the magnetic-bias
-    /// correction the walking lock would find, so a walk relock is still better when one is possible).
+    /// Lock immediately on a provisional mount offset so live cues flow at once, indoors or on the
+    /// bench, where the walk-based lock can never gather GPS-course samples. The default offset of 0
+    /// trusts the compass as body-forward. Stays provisional: a later straight walk refines it to the
+    /// accurate offset (which also folds in the belt's magnetic bias) with no further action.
     mutating func lockManually(offsetDegrees: Double = 0) {
         state = .locked(offsetDegrees: offsetDegrees)
+        refined = false
     }
 
     // MARK: - Circular statistics (pure, unit tested)
