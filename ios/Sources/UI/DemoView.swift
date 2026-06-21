@@ -10,6 +10,8 @@ import SwiftUI
 /// wearer feels. Controls to bring the camera up and drive a route sit in the bottom tray.
 struct DemoView: View {
     let model: AppModel
+    /// Whether the corner radar is raised to the full-screen route map.
+    @State private var mapExpanded = false
 
     var body: some View {
         ZStack {
@@ -24,6 +26,14 @@ struct DemoView: View {
             .padding(.horizontal, 14)
             .padding(.top, 6)
             .padding(.bottom, 6)
+
+            if mapExpanded {
+                ExpandedMapView(model: model) {
+                    withAnimation(.easeInOut(duration: 0.25)) { mapExpanded = false }
+                }
+                .transition(.opacity.combined(with: .scale(scale: 0.92, anchor: .topTrailing)))
+                .zIndex(1)
+            }
         }
     }
 
@@ -34,6 +44,27 @@ struct DemoView: View {
             DirectionsBanner(model: model)
                 .frame(maxWidth: .infinity, alignment: .leading)
             Minimap(model: model, diameter: 116)
+                // A clear layer above the radar's map view captures the tap so it reliably raises the
+                // full route map; a small glyph hints that the radar expands.
+                .overlay {
+                    Circle()
+                        .fill(.clear)
+                        .contentShape(Circle())
+                        .onTapGesture { withAnimation(.easeInOut(duration: 0.25)) { mapExpanded = true } }
+                }
+                .overlay(alignment: .bottomTrailing) {
+                    Image(systemName: "arrow.up.left.and.arrow.down.right")
+                        .font(.caption2.weight(.bold))
+                        .foregroundStyle(.white)
+                        .padding(5)
+                        .background(.black.opacity(0.55), in: Circle())
+                        .offset(x: -8, y: -8)
+                        .allowsHitTesting(false)
+                }
+                .accessibilityElement()
+                .accessibilityLabel("Route radar")
+                .accessibilityHint("Expands the full route map")
+                .accessibilityAddTraits(.isButton)
         }
     }
 
@@ -45,35 +76,87 @@ struct DemoView: View {
                 EarlyWarningPill(flag: flag)
             }
             StatusBar(model: model)
+            LidarBars(depth: model.depth)
             controls
         }
         .frame(maxWidth: .infinity)
     }
 
+    /// The judge-facing controls: bring the camera up, and talk. Destination is set by voice (the
+    /// locked decision), so the bench buttons (load route, run sim, walk) live in Diagnostics, not
+    /// here. A Stop appears only while a voice-started walk is running.
     private var controls: some View {
-        VStack(spacing: 8) {
-            HStack(spacing: 8) {
+        VStack(spacing: 14) {
+            HStack(spacing: 14) {
                 if model.depth.isRunning {
                     hudButton("Stop camera", tint: .gray) { model.depth.stop() }
                 } else {
                     hudButton("Start camera", tint: .accentColor) { model.depth.start() }
                         .disabled(!model.depth.isSupported)
                 }
-                hudButton("Load route", tint: .gray) { model.loadDemoRoute() }
-                if model.isDriving {
-                    hudButton("Stop", tint: .gray) { model.stopDriving() }
-                } else {
-                    hudButton("Run sim", tint: .accentColor) { model.startSimulation() }
-                }
+                talkButton
             }
-            if !model.isDriving {
-                hudButton("Walk (live GPS)", tint: .gray) { model.startLiveWalk() }
-                    .disabled(model.route.path.count < 2 || model.location.location == nil)
+            if model.isDriving {
+                hudButton("Stop", tint: .gray) { model.stopDriving() }
             }
+            voiceTranscript
         }
         .frame(maxWidth: .infinity)
-        .padding(10)
-        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 16))
+        .padding(18)
+        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 20))
+    }
+
+    /// The voice entry for the demo: tap to talk, the button reflects the live voice state, and the
+    /// same begin/think/ready tones the wearer relies on fire on the state change.
+    private var talkButton: some View {
+        let look = Self.talkLook(for: model.voice.state)
+        return Button {
+            Task { await model.voice.toggle() }
+        } label: {
+            HStack(spacing: 6) {
+                Image(systemName: look.symbol)
+                    .symbolEffect(.pulse, isActive: model.voice.state == .listening)
+                Text(look.title)
+            }
+            .font(.subheadline.weight(.semibold))
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 8)
+        }
+        .buttonStyle(.borderedProminent)
+        .tint(look.color)
+        .disabled(!model.voice.isConfigured)
+        .opacity(model.voice.isConfigured ? 1 : 0.5)
+        .onChange(of: model.voice.state) { _, newState in
+            switch newState {
+            case .connecting: Feedback.voiceActivating()
+            case .listening: Feedback.voiceReady()
+            case .thinking: Feedback.voiceProcessing()
+            default: break
+            }
+        }
+        .accessibilityLabel(look.title)
+        .accessibilityHint("Sets the destination by voice")
+    }
+
+    /// The last thing the wearer said and the agent's reply, so the room can follow a voice command.
+    @ViewBuilder private var voiceTranscript: some View {
+        if !model.voice.lastTranscript.isEmpty || !model.voice.lastReply.isEmpty {
+            VStack(spacing: 2) {
+                if !model.voice.lastTranscript.isEmpty {
+                    Text("\u{201C}\(model.voice.lastTranscript)\u{201D}")
+                        .font(.caption)
+                        .foregroundStyle(.white.opacity(0.7))
+                }
+                if !model.voice.lastReply.isEmpty {
+                    Text(model.voice.lastReply)
+                        .font(.caption.weight(.medium))
+                        .foregroundStyle(.white)
+                }
+            }
+            .multilineTextAlignment(.center)
+            .frame(maxWidth: .infinity)
+            .accessibilityElement(children: .combine)
+        }
     }
 
     private func hudButton(_ title: String, tint: Color, action: @escaping () -> Void) -> some View {
@@ -85,6 +168,82 @@ struct DemoView: View {
         }
         .buttonStyle(.borderedProminent)
         .tint(tint)
+    }
+
+    private static func talkLook(for state: VoiceState) -> (title: String, symbol: String, color: Color) {
+        switch state {
+        case .idle: return ("Talk", "mic.fill", .accentColor)
+        case .connecting: return ("Connecting", "mic.fill", .gray)
+        case .listening: return ("Listening", "waveform", .blue)
+        case .thinking: return ("Thinking", "ellipsis", .indigo)
+        case .speaking: return ("Speaking", "speaker.wave.2.fill", .green)
+        case .unavailable: return ("Voice off", "mic.slash.fill", .gray)
+        case .failed: return ("Retry", "exclamationmark.triangle.fill", .orange)
+        }
+    }
+}
+
+// MARK: - LiDAR bars
+
+/// Three condensed, color-coded bars (left, center, right) giving the sighted room a glanceable read
+/// of what the LiDAR sees in each band: green is clear, orange is closing, red is close. Mirrors the
+/// three-band sampling the obstacle cue arbitrates on, so the bar that turns red is the side the belt
+/// taps. Sits just above the controls so it reads next to the live cue.
+private struct LidarBars: View {
+    let depth: DepthService
+
+    var body: some View {
+        HStack(spacing: 8) {
+            bar("L", depth.bands.left)
+            bar("C", depth.bands.center)
+            bar("R", depth.bands.right)
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 8)
+        .frame(maxWidth: .infinity)
+        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 14))
+        .opacity(depth.isRunning ? 1 : 0.55)
+        .animation(.easeOut(duration: 0.2), value: depth.bands)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(accessibilityText)
+    }
+
+    private func bar(_ name: String, _ meters: Double) -> some View {
+        let tint = color(for: meters)
+        return VStack(spacing: 4) {
+            RoundedRectangle(cornerRadius: 4)
+                .fill(tint.gradient)
+                .frame(height: 10)
+                .shadow(color: tint.opacity(depth.isRunning && meters > 0 ? 0.6 : 0), radius: 4)
+            Text("\(name)  \(valueText(meters))")
+                .font(.caption2.monospaced())
+                .foregroundStyle(.white.opacity(0.85))
+                .lineLimit(1)
+                .minimumScaleFactor(0.7)
+        }
+        .frame(maxWidth: .infinity)
+    }
+
+    private func color(for meters: Double) -> Color {
+        guard depth.isRunning, meters > 0 else { return .white.opacity(0.18) }
+        if meters <= CitrusSquadConfig.dangerNearMeters { return .red }
+        if meters <= depth.thresholdMeters { return .orange }
+        return .green
+    }
+
+    private func valueText(_ meters: Double) -> String {
+        guard depth.isRunning else { return "off" }
+        return meters > 0 ? String(format: "%.1fm", meters) : "\u{2014}"
+    }
+
+    private var accessibilityText: String {
+        guard depth.isRunning else { return "LiDAR off" }
+        func describe(_ meters: Double) -> String {
+            guard meters > 0 else { return "no reading" }
+            return String(format: "%.1f meters", meters)
+        }
+        return "LiDAR bands. Left \(describe(depth.bands.left)), "
+            + "center \(describe(depth.bands.center)), right \(describe(depth.bands.right))."
     }
 }
 
