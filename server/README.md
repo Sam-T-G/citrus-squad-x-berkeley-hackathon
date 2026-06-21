@@ -101,13 +101,9 @@ On the phone, this is the **Cloud** belt transport (Control Panel); **Local (UDP
 ## Wire format
 
 - **In (WebSocket):** the 4 raw LC2 bytes per frame, `event, mask, intensity, seq`, exactly what the phone already builds. A JSON text frame `{"event":33,"mask":4,"intensity":192,"seq":0}` also works, for debugging.
-- **Out (serial):** one newline-terminated word per cue change, mapped by `lc2_to_command`:
-  - `left` / `right` / `forward` for a directional turn (mask bit Left `0x02`, Right `0x04`, Front `0x01`)
-  - `u_turn` for a U-turn (event `0x22`)
-  - `stop` for a hazard, obstacle, or arrived cue (the all-servo buzz)
-  - `idle` for an idle cue, and automatically on link silence (this is what stops the belt)
+- **Out (serial):** the cue's quadrant mask, passed straight through as `m<bits>` so the belt fires exactly the motors the phone lit (bit0 Front, bit1 Left, bit2 Right, bit3 Back). A left-side obstacle (`0x02`) sends `m2` and taps the **left motor only**; `m6` is left+right; `m15` is all four (an arrived sweep). `idle` (event `0x00` or an empty mask, and on link silence) stops the belt. This is the finite per-servo control, matching the phone's belt view one-for-one.
 
-  Intensity, sequence, and any far-left/far-right distinction do not survive this mapping. The firmware also has `rotate_left`/`rotate_right` and a finite `low_battery` alert, but no LC2 event maps to those yet (manual/firmware test only). The Arduino path is the coarse fallback; the ESP32 path (`firmware/`) keeps the full LC2 frame over UDP.
+  The firmware still accepts the named words (`forward`/`stop`/`left`/`right`/`rotate_left`/`rotate_right`/`u_turn`/`low_battery`) for manual and dashboard testing. Intensity and the event's tap-pattern flavor do not survive this path; the ESP32 path (`firmware/`) keeps the full LC2 frame over UDP.
 
 ## Config (env vars)
 

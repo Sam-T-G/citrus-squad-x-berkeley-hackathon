@@ -3,13 +3,15 @@
 // By Angelo (the `arduino` branch). This is the firmware the belt-bridge server
 // (`server/app.py`) drives over USB serial when there is no ESP32 / Wi-Fi module.
 //
-// Protocol: the server sends ONE newline-terminated word per cue, at 9600 baud:
-//   forward | stop | left | right | rotate_left | rotate_right | u_turn | idle
-//   low_battery (alias: error)  -- finite 3-tap alert, self-returns to idle
-// Most commands latch a CONTINUOUS pulse pattern that runs until the next command, so
-// "idle" is what stops the belt; the server sends it when a cue clears and on link
-// silence. `low_battery` is finite (no LC2 source today; manual/firmware test only).
-// See server/README.md for the LC2 -> command mapping.
+// Protocol: the server sends ONE newline-terminated command per cue, at 9600 baud.
+//   m<bits>  -- the live path: fire exactly the motors in the phone's quadrant mask
+//              (bit0 Front, bit1 Left, bit2 Right, bit3 Back). e.g. "m2" = left only,
+//              "m6" = left+right, "m15" = all four. This is the finite per-servo control.
+//   idle     -- stop the belt (the server sends it when a cue clears and on link silence)
+//   named words (forward | stop | left | right | rotate_left | rotate_right | u_turn |
+//              low_battery/error) -- fixed patterns kept for manual and dashboard testing.
+// Every command latches a CONTINUOUS pulse that runs until the next one (low_battery is a
+// finite 3-tap alert). See server/README.md for the cue -> command mapping.
 
 #include <Wire.h>
 #include <Adafruit_PWMServoDriver.h>
@@ -29,26 +31,33 @@ const int PIN_LEFT  = 3;
 int servoPins[NUM_SERVOS] = {PIN_FRONT, PIN_RIGHT, PIN_BACK, PIN_LEFT};
 
 // --- STATE MACHINE VARIABLES ---
-enum HapticState { 
-  IDLE, 
-  FORWARD, 
-  STOP, 
-  TURN_LEFT, 
-  TURN_RIGHT, 
-  ROTATE_LEFT, 
+enum HapticState {
+  IDLE,
+  FORWARD,
+  STOP,
+  TURN_LEFT,
+  TURN_RIGHT,
+  ROTATE_LEFT,
   ROTATE_RIGHT,
-  U_TURN,          
-  LOW_BATTERY      
+  U_TURN,
+  LOW_BATTERY,
+  MASK             // fire exactly the motors named in maskBits (the phone's quadrant mask)
 };
 
 HapticState currentState = IDLE;
 
+// Which motors the MASK state pulses, using the phone's quadrant bits:
+// bit0 = Front, bit1 = Left, bit2 = Right, bit3 = Back. This is the finite per-motor path:
+// the server sends "m<bits>" and exactly those motors fire, matching the phone's belt view.
+const uint8_t M_FRONT = 0x01, M_LEFT = 0x02, M_RIGHT = 0x04, M_BACK = 0x08;
+uint8_t maskBits = 0;
+
 unsigned long previousMillis = 0;
-unsigned long currentInterval = 0; 
-bool isPulseOn = false; 
+unsigned long currentInterval = 0;
+bool isPulseOn = false;
 
 // Tracks how many taps have occurred for finite patterns
-int tapCounter = 0; 
+int tapCounter = 0;
 
 // The timing for ALL taps across the system
 const int PULSE_ON_TIME = 150;  
@@ -97,6 +106,7 @@ void checkSerialCommands() {
     else if (cmd == "u_turn") triggerPattern(U_TURN);
     else if (cmd == "low_battery" || cmd == "error") triggerPattern(LOW_BATTERY);
     else if (cmd == "idle") triggerPattern(IDLE);
+    else if (cmd.startsWith("m")) setMask((uint8_t) cmd.substring(1).toInt());
     else if (cmd.length() > 0) Serial.println("-> ERROR: Command not recognized.");
   }
 }
@@ -108,10 +118,24 @@ void triggerPattern(HapticState newState) {
   if (currentState != newState) {
     Serial.println("-> State Changed");
     currentState = newState;
-    isPulseOn = false;       
-    currentInterval = 0;     
+    isPulseOn = false;
+    currentInterval = 0;
     tapCounter = 0;             // Reset the tap counter for the new state
-    retractAllServosSmoothly(); 
+    retractAllServosSmoothly();
+  }
+}
+
+// Fire exactly the motors named in `bits` (the phone's quadrant mask). Empty mask = idle.
+// Re-triggers when the set of motors changes so the new mask takes effect immediately.
+void setMask(uint8_t bits) {
+  if (bits == 0) { triggerPattern(IDLE); return; }
+  if (currentState != MASK || bits != maskBits) {
+    maskBits = bits;
+    currentState = MASK;
+    isPulseOn = false;
+    currentInterval = 0;
+    tapCounter = 0;
+    retractAllServosSmoothly();
   }
 }
 
@@ -208,6 +232,13 @@ void updateHaptics() {
       
     case LOW_BATTERY:
       extendServosSmoothly(false, false, true, false);
+      break;
+
+    case MASK:
+      // Fire exactly the motors the phone lit, decoding its quadrant bits.
+      // extendServosSmoothly(front, right, back, left).
+      extendServosSmoothly(maskBits & M_FRONT, maskBits & M_RIGHT,
+                           maskBits & M_BACK,  maskBits & M_LEFT);
       break;
   }
 }

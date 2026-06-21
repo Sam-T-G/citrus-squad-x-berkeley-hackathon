@@ -98,42 +98,25 @@ def autodetect_port() -> str | None:
 
 
 def lc2_to_command(lc2: bytes) -> bytes:
-    """Translate a 4-byte LC2 cue to the newline-terminated word belt.ino understands.
+    """Translate a 4-byte LC2 cue to the command belt.ino understands.
 
-    The firmware (Angelo's) reads `readStringUntil('\\n')` and latches a CONTINUOUS pulse
-    per state, so every cue maps to a command and `idle` is what stops the belt. Intensity,
-    sequence, and the far-left/far-right distinction do not survive this mapping; the
-    Arduino path is the coarse fallback, the ESP32 path keeps full LC2.
+    The belt fires exactly the motors the phone lit. The cue's quadrant mask (byte 1) is the
+    same per-motor bitfield the phone's belt view draws (bit0 Front, bit1 Left, bit2 Right,
+    bit3 Back), so we pass it straight through as `m<bits>` and the firmware pulses precisely
+    those motors. This is the finite per-servo control: a left-side obstacle taps the left
+    motor only, not all four. Intensity and the event's tap-pattern flavor do not survive to
+    the Arduino path; the ESP32 path keeps the full LC2 frame.
 
-      - idle (0x00)                  -> b"idle\\n"          (stops the belt; must be sent)
-      - vision/obstacle (0x10/0x40)  -> b"stop\\n"          (all-servo hazard buzz)
-      - turn-around (0x22)           -> b"u_turn\\n"        (dedicated U-turn pattern)
-      - arrived (0x23)               -> b"stop\\n"          (no arrival pattern; a buzz reads
-                                                            as "you're here")
-      - directional turns, by mask   -> b"left\\n" / b"right\\n" / b"forward\\n"
+      - idle (0x00) or empty mask  -> b"idle\\n"   (stops the belt; must be sent)
+      - any cue with a mask        -> b"m<bits>\\n" (fire exactly those quadrants)
 
-    Angelo's firmware also has `rotate_left`/`rotate_right` (in-place reorient) and
-    `low_battery` (a finite alert). No LC2 event maps to those today, so they stay for
-    manual/firmware testing.
+    The firmware still accepts the named words (forward/stop/left/right/rotate_*/u_turn) for
+    manual and dashboard testing; the live cue path uses the mask so it mirrors the display.
     """
     event, mask = lc2[0], lc2[1]
-    if event == EV_IDLE:
+    if event == EV_IDLE or mask == 0:
         return b"idle\n"
-    if event in (EV_VISION, EV_OBSTACLE, EV_ARRIVED):
-        return b"stop\n"
-    if event == EV_TURN_AROUND:
-        return b"u_turn\n"
-    if event == EV_FORWARD:
-        return b"forward\n"
-    if mask & MASK_LEFT:
-        return b"left\n"
-    if mask & MASK_RIGHT:
-        return b"right\n"
-    if mask & MASK_FRONT:
-        return b"forward\n"
-    if mask & MASK_BACK:
-        return b"stop\n"     # no dedicated back pattern; treat as an alert
-    return b"idle\n"
+    return f"m{mask}\n".encode()
 
 
 def parse_inbound(message: dict) -> bytes | None:
