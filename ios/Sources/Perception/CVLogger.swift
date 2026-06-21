@@ -16,25 +16,38 @@ final class CVLogger {
 
     private var buffer: [String] = []
     private(set) var isLogging = false
-    private var sessionStart: UInt64 = 0
+    private var sessionDate = Date()
+
+    private static let folderName = "CVLogs"
+    private static let fileFormatter: DateFormatter = {
+        let f = DateFormatter()
+        f.dateFormat = "yyyy-MM-dd_HH-mm-ss"
+        return f
+    }()
 
     // MARK: - Control (call on ARKit queue)
 
     func start() {
         buffer = [Self.csvHeader]
-        sessionStart = UInt64(Date().timeIntervalSince1970 * 1000)
+        sessionDate = Date()
         isLogging = true
     }
 
-    /// Flush buffer to a timestamped CSV in Documents. Returns the file URL or nil on failure.
+    /// Flush buffer to CVLogs/<date-time>.csv in Documents. Returns the file URL or nil on failure.
     func stop() -> URL? {
         isLogging = false
         guard buffer.count > 1 else { return nil }
 
-        let name = "cv_log_\(sessionStart).csv"
-        guard let dir = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first else { return nil }
-        let url = dir.appendingPathComponent(name)
+        guard let documents = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first else { return nil }
+        let folder = documents.appendingPathComponent(Self.folderName)
+        do {
+            try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        } catch {
+            return nil
+        }
 
+        let name = "\(Self.fileFormatter.string(from: sessionDate)).csv"
+        let url = folder.appendingPathComponent(name)
         let content = buffer.joined(separator: "\n")
         do {
             try content.write(to: url, atomically: true, encoding: .utf8)
