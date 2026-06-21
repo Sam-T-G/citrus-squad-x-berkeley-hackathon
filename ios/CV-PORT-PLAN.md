@@ -4,6 +4,40 @@ How we take Cole's tested Python computer-vision layer (`cv/`, now on `main`) an
 
 **Owner:** Sam (iOS lane). Cole owns the Python reference and the CoreML export; he does not write or review Swift. Josh owns the audio sink. This plan stays inside `ios/`.
 
+## Implementation status (2026-06-20)
+
+Landed on `sam/ios-app-base` (commit `561de04`):
+
+- `Perception/PersonFusion.swift` — the depth-fusion math, ported from `cv/pipeline.py`. Pure.
+- `Perception/PersonDetector.swift` — YOLOv8n via Vision/CoreML, depth fusion, and the settle /
+  hysteresis / refractory gate. The gate transitions are pure.
+- `CitrusSquadConfig` vision constants; `DepthService` runs the detector on its ARSession frames.
+- `Tests/PersonFusionTests.swift` + `Tests/PersonDetectorTests.swift`, mirroring Cole's
+  `tests/test_pipeline.py` and the §6 timing rules.
+
+Verified off-device: the pure fusion math (14 assertions) and the gate state machine (13
+assertions) pass, and the whole app compiles clean against the iOS SDK under Swift 6 complete
+concurrency.
+
+Held back by one line: `AppModel.attachVision(sink: vision, store: detections)` in `init` plus the
+thermal gate in `tick`. Both sit in the working tree but are not committed yet, because `AppModel`
+is being co-edited by the Maps integration and I did not want to commit half of that work. They
+activate the tier; until they land it is wired but dormant.
+
+Remaining, all needing the phone:
+
+- **P0 model:** Cole's `yolov8n.mlpackage` export, dropped into `ios/Sources/Resources/`. Until then
+  `PersonDetector` logs "model not bundled" and the tier stays dark by design.
+- **Orientation calibration:** confirm `PersonDetector.toNativeNormalized`'s `.right` case with a
+  left/right target. This is the one runtime unknown; everything numeric is tested.
+- **On-device build + run:** no iOS simulator is installed here, so the device build and the live
+  cue are the last checks.
+
+A note on the existing scaffold: `Sensors/CameraService.swift` (a separate `AVCaptureSession`) and
+`Perception/DetectionStore.swift` predate this and back the demo overlay. The camera and ARKit depth
+are mutually exclusive on one device, so the live fused cue runs through the ARSession in
+`DepthService`, not `CameraService`. `DetectionStore` still receives the boxes for the overlay.
+
 ## The short version
 
 Cole already proved the algorithm in Python: YOLOv8n finds a person, ARKit-style LiDAR depth gives the distance, and the two fuse into one detection with a side and a range. We do not re-derive any of that. We translate the same math to Swift, run YOLOv8n through CoreML and Vision on the phone, and feed the result into the hazard seam the app already has. The win condition is a person stepping into frame producing a `0x10` tap on the correct side, graded by distance, preempting the turn cue, and settling cleanly when they leave.
