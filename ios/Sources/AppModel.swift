@@ -1,4 +1,5 @@
 import Foundation
+import CoreLocation
 import Observation
 import os
 
@@ -19,6 +20,9 @@ final class AppModel {
     let route = RouteEngine()
     let thermal = ThermalMonitor()
 
+    /// Voice layer (Deepgram Voice Agent + Claude). Off the belt's safety path; see `docs/14`.
+    let voice = VoiceModel()
+
     /// Where the ESP32 is listening. Editable from the control panel.
     var espHost: String = "192.168.4.1"
     var espPort: UInt16 = 9999
@@ -32,6 +36,14 @@ final class AppModel {
     let vision = VisionHazardSource()
     let audio = AudioCueSink()
 
+    /// Demo visualizer plug point: the YOLO tier fills `detections`, and the camera preview rides the
+    /// shared `DepthService` ARSession (no separate capture session).
+    let detections = DetectionStore()
+
+    /// Early-warning surface: the bearing tracker raises a flag when an object holds the wearer's
+    /// heading and looms before LiDAR sees it. Diagnostics only today; the demo console reads it.
+    let interference = InterferenceStore()
+
     /// Navigation: software simulation today, live Google Maps when a key is entered.
     let simulator = RouteSimulator()
     var mode: DriveMode = .bench
@@ -40,12 +52,17 @@ final class AppModel {
     private(set) var routeStatus = "no route loaded"
     private(set) var resolved: ResolvedCue = .idle
 
-    /// Maps Directions API key. Entered in the app, kept in UserDefaults, never committed.
+    /// Google Maps API key. One key serves both the rendered map (free) and the Directions web call
+    /// (the one billed path). Entered in the app, kept in UserDefaults, never committed. Setting it
+    /// also hands it to the Maps SDK so the live map can load without a relaunch.
     var directionsAPIKey: String = UserDefaults.standard.string(forKey: "citrussquad.gmapsKey") ?? "" {
-        didSet { UserDefaults.standard.set(directionsAPIKey, forKey: "citrussquad.gmapsKey") }
+        didSet {
+            UserDefaults.standard.set(directionsAPIKey, forKey: "citrussquad.gmapsKey")
+            MapsBootstrap.provideKeyIfNeeded(directionsAPIKey)
+        }
     }
 
-    enum DriveMode: String, CaseIterable, Sendable { case bench, simulate }
+    enum DriveMode: String, CaseIterable, Sendable { case bench, simulate, live }
 
     private(set) var link = LinkReport(connectionState: "down", packetsSent: 0, lastEvent: "—")
     private(set) var transmitting = false
@@ -57,16 +74,39 @@ final class AppModel {
     /// Governs Google Directions usage: caches, coalesces, debounces, and caps live calls so the
     /// API bill cannot run away. See `DirectionsService` and the cost-control note in the README.
     private let directions = DirectionsService()
+    /// Resolves a spoken place name to coordinates: presets first, then free MKLocalSearch.
+    private let placeResolver = PlaceResolver()
     private(set) var directionsUsage = DirectionsUsage()
     private(set) var isFetchingRoute = false
+
+    /// Debounces the LiDAR avoidance layer across the 10 Hz decide loop. See `ObstacleAvoidance`.
+    private var avoidanceFilter = AvoidanceFilter()
+
+    /// On-device debug log of cue and avoidance transitions. Shown in the Diagnostics screen.
+    let events = EventLog()
+    /// Live avoidance read-outs for the Diagnostics screen: the raw decision and the debounced one.
+    private(set) var avoidanceRaw = "clear"
+    private(set) var avoidanceFiltered = "clear"
 
     private var cueSinks: [CueSink] { [audio] }
 
     init() {
+        // The person tier shares the LiDAR ARSession: one frame feeds both depth and YOLO. Wiring
+        // the sink here is all it takes; the decide loop already ranks a person over an obstacle.
+        depth.attachVision(sink: vision, store: detections, interference: interference)
+        // Start location so heading and GPS are live for navigation and for voice "where am I".
+        if location.authorization == .notDetermined { location.requestPermission() }
+        location.start()
         // The decide loop runs from launch so the UI and simulator update even before the belt is
         // linked. Belt staging simply no-ops until a transmitter exists.
         startDecideLoop()
         Task { directionsUsage = await directions.usage() }
+        // Voice runs spoken commands through the same navigation methods the UI uses. Weak self so
+        // the closure never keeps the app model alive.
+        voice.handler = { [weak self] command in
+            guard let self else { return "" }
+            return await self.handleVoice(command)
+        }
     }
 
     // MARK: - Link control
@@ -93,9 +133,11 @@ final class AppModel {
     // MARK: - Operator actions
 
     /// Capture the phone-forward to body-forward offset. See `docs/04-phone-side.md` calibration.
-    func calibrate() {
-        guard location.trueHeading >= 0 else { return }
+    @discardableResult
+    func calibrate() -> Bool {
+        guard location.trueHeading >= 0 else { return false }
         route.calibrate(phoneHeading: location.trueHeading)
+        return true
     }
 
     /// Fire one known cue so we can confirm the belt reacts. This is the M0 "hello packet" check.
@@ -138,6 +180,17 @@ final class AppModel {
         }
     }
 
+    /// Set the destination from a coordinate the operator tapped on the map. No geocoding is called,
+    /// so this is free. When the origin is empty and there is a GPS fix, seed it from the live
+    /// position so a route can be fetched in one tap.
+    func setDestinationFromTap(_ point: GeoPoint) {
+        destinationText = String(format: "%.6f,%.6f", point.latitude, point.longitude)
+        if originText.isEmpty, let live = location.location {
+            originText = String(format: "%.6f,%.6f", live.coordinate.latitude, live.coordinate.longitude)
+        }
+        routeStatus = "destination set — tap Fetch to route"
+    }
+
     /// Drop the cached routes. The next fetch for a route will hit the network once.
     func clearRouteCache() {
         Task {
@@ -153,13 +206,49 @@ final class AppModel {
         simulator.start()
     }
 
-    func stopSimulation() {
+    /// Field-test mode: drive the turn cues off the real GPS fix and compass instead of the virtual
+    /// walker. The pure-pursuit engine follows the loaded route from wherever the wearer actually is.
+    /// Calibrate facing forward first so the body-relative bearing is right.
+    func startLiveWalk() {
+        if location.authorization == .notDetermined { location.requestPermission() }
+        location.start()
+        simulator.stop()
+        mode = .live
+    }
+
+    /// Stop whichever drive is active (simulated or live) and return to the idle bench state.
+    func stopDriving() {
         simulator.stop()
         mode = .bench
     }
 
+    /// Kept for callers (and voice) that say "stop simulation"; same as stopping any drive.
+    func stopSimulation() { stopDriving() }
+
+    /// True while either the simulator or a live GPS walk is driving cues.
+    var isDriving: Bool { simulator.isRunning || mode == .live }
+
+    /// The wearer's position for the map and overlay: the simulated walker in `.simulate`, the live
+    /// GPS fix in `.live` (and as a fallback on the bench).
+    var navPosition: GeoPoint? {
+        switch mode {
+        case .simulate: return simulator.position
+        case .live: return liveGeoPoint
+        case .bench: return liveGeoPoint ?? simulator.position
+        }
+    }
+
+    /// Travel heading for the map camera: the simulated course, or the live compass.
+    var navHeading: Double {
+        mode == .simulate ? simulator.heading : location.trueHeading
+    }
+
+    private var liveGeoPoint: GeoPoint? {
+        location.location.map { GeoPoint(latitude: $0.coordinate.latitude, longitude: $0.coordinate.longitude) }
+    }
+
     private func loadRoute(_ waypoints: [GeoPoint]) {
-        route.loadRoute(RouteMath.maneuvers(from: waypoints))
+        route.loadPath(waypoints)
         simulator.load(waypoints)
     }
 
@@ -167,6 +256,110 @@ final class AppModel {
         let parts = text.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }
         guard parts.count == 2, let lat = Double(parts[0]), let lon = Double(parts[1]) else { return nil }
         return GeoPoint(latitude: lat, longitude: lon)
+    }
+
+    // MARK: - Voice
+
+    /// Run a spoken command and return the line the agent should speak. Off the belt's safety path,
+    /// so it is allowed to be slow and to fail without affecting navigation or the LiDAR reflex.
+    func handleVoice(_ command: VoiceCommand) async -> String {
+        switch command {
+        case .setDestination(let place): return await setSpokenDestination(place)
+        case .routeStatus: return spokenRouteStatus()
+        case .whereAmI: return await spokenLocation()
+        case .describeSurroundings: return spokenSurroundings()
+        case .recalibrate:
+            return calibrate() ? "Recalibrated. Face forward and start walking." : "Hold still, then try again."
+        case .stop:
+            stopSimulation()
+            return "Stopped."
+        case .unavailable:
+            return "I cannot do that yet."
+        }
+    }
+
+    private func setSpokenDestination(_ spoken: String) async -> String {
+        let origin = location.location.map {
+            GeoPoint(latitude: $0.coordinate.latitude, longitude: $0.coordinate.longitude)
+        }
+        switch await placeResolver.resolve(spoken, near: origin) {
+        case .resolved(let place):
+            destinationText = String(format: "%.6f,%.6f", place.point.latitude, place.point.longitude)
+            guard let origin else {
+                return "I found \(place.name), but I need a GPS fix before I can guide you there."
+            }
+            originText = String(format: "%.6f,%.6f", origin.latitude, origin.longitude)
+            // Link voice to navigation: build a real route to the resolved place and walk it off the
+            // wearer's live GPS and compass, so guidance depends on where they actually are.
+            await driveToResolvedPlace(origin: origin, destination: place.point)
+            return "Heading to \(place.name)."
+        case .ambiguous(let options):
+            let names = options.map(\.name).joined(separator: ", or ")
+            return "I found a few. Did you mean \(names)?"
+        case .notFound:
+            return "I could not find \(spoken). Say it again."
+        }
+    }
+
+    /// Build a route to a voice-resolved place and walk it off the wearer's real GPS and compass.
+    /// Uses Google Directions when a key is set, otherwise a direct origin-to-destination line so the
+    /// belt still points the right way. Live walk means the cues depend on where the wearer actually
+    /// is, not a virtual walker.
+    private func driveToResolvedPlace(origin: GeoPoint, destination: GeoPoint) async {
+        if !directionsAPIKey.isEmpty {
+            do {
+                let waypoints = try await directions.route(from: origin, to: destination, apiKey: directionsAPIKey)
+                loadRoute(waypoints)
+                routeStatus = "voice route: \(waypoints.count) points"
+            } catch {
+                loadRoute([origin, destination])
+                routeStatus = "voice route (direct): \(error)"
+            }
+        } else {
+            loadRoute([origin, destination])
+            routeStatus = "voice route (direct line)"
+        }
+        startLiveWalk()
+    }
+
+    private func spokenRouteStatus() -> String {
+        guard !route.maneuvers.isEmpty else { return "No route is loaded." }
+        let remaining = max(0, route.maneuvers.count - route.activeIndex)
+        if route.distanceToNext > 0 {
+            return "About \(Int(route.distanceToNext.rounded())) meters to the next turn. \(remaining) turns left."
+        }
+        return "On route. \(remaining) turns left."
+    }
+
+    /// Reverse-geocode the current GPS fix to a spoken place. Real location context from Maps.
+    private func spokenLocation() async -> String {
+        guard let fix = location.location else {
+            return "I don't have a location fix yet. Check that location is allowed, and try again outdoors."
+        }
+        let geocoder = CLGeocoder()
+        if let placemark = try? await geocoder.reverseGeocodeLocation(fix).first {
+            let spot = placemark.name ?? placemark.thoroughfare ?? placemark.locality
+            if let spot, let city = placemark.locality, city != spot {
+                return "You are near \(spot), in \(city)."
+            }
+            if let spot { return "You are near \(spot)." }
+        }
+        return String(format: "You are at latitude %.4f, longitude %.4f.",
+                      fix.coordinate.latitude, fix.coordinate.longitude)
+    }
+
+    /// Cautious narration grounded in the LiDAR hazard. V3 wraps this in a Claude draft-and-verify
+    /// pass per `docs/14`; until then it states only what the depth tier actually reports, so it
+    /// cannot claim a clear path the sensors did not confirm.
+    private func spokenSurroundings() -> String {
+        guard let hazard = currentHazard() else { return "The path ahead looks clear." }
+        let side = hazard.mask.contains(.right) ? "on your right"
+            : hazard.mask.contains(.left) ? "on your left" : "ahead"
+        let distance = hazard.distanceMeters > 0
+            ? "about \(Int(hazard.distanceMeters.rounded())) meters"
+            : "close"
+        let what = hazard.kind == .person ? "a person" : "something"
+        return "Caution, \(what) \(distance) \(side)."
     }
 
     // MARK: - Decide loop
@@ -182,15 +375,28 @@ final class AppModel {
     }
 
     private func tick() {
+        // Thermal degrade ladder (docs/12 §6): at .serious, drop the camera tier and lean on LiDAR.
+        // Reads the live system state, which moves even when no soak is recording.
+        depth.visionEnabled = ProcessInfo.processInfo.thermalState.rawValue < ProcessInfo.ThermalState.serious.rawValue
+
+        // Hand the early-warning tracker the live turn rate so it can tell a centered obstacle from
+        // the wearer panning the camera. Diagnostics only; this does not enter the cue decision below.
+        depth.latestYawRate = motion.yawRateRadPerSecond
+
+        // Priority stack, highest first: a person in the path (camera) preempts everything; then the
+        // LiDAR obstacle-avoidance layer steers around what is ahead; navigation rides underneath.
         let turn = currentTurnCue()
-        let hazard = currentHazard()
+        let person = vision.currentHazard
+        let avoidance = obstacleCuesEnabled ? avoidanceCue() : nil
 
         let decided: ResolvedCue
-        if let hazard {
-            decided = ResolvedCue(event: hazard.event,
-                                  mask: hazard.mask,
-                                  intensity: ResolvedCue.intensity(forDistance: hazard.distanceMeters),
+        if let person {
+            decided = ResolvedCue(event: person.event,
+                                  mask: person.mask,
+                                  intensity: ResolvedCue.intensity(forDistance: person.distanceMeters),
                                   source: .hazard)
+        } else if let avoidance {
+            decided = avoidance
         } else if let turn {
             decided = ResolvedCue(event: turn.event,
                                   mask: turn.mask,
@@ -201,8 +407,46 @@ final class AppModel {
         }
 
         resolved = decided
+        events.log("cue",
+                   "\(decided.event.label) mask=0x\(String(decided.mask.rawValue, radix: 16)) [\(decided.source.rawValue)]",
+                   dedupKey: "\(decided.event.rawValue)-\(decided.mask.rawValue)-\(decided.source.rawValue)")
         stageToBelt(decided)
         for sink in cueSinks { sink.emit(decided) }
+    }
+
+    /// The LiDAR obstacle-avoidance cue, or nil when the path is clear. Reads the three depth bands,
+    /// routes toward the open side (or stops and reorients when boxed in), and debounces the result
+    /// so the belt does not chatter. Sits above navigation and below the camera person tier.
+    private func avoidanceCue() -> ResolvedCue? {
+        let bands = depth.bands
+        let raw = ObstacleAvoidance.decide(left: bands.left,
+                                           center: bands.center,
+                                           right: bands.right,
+                                           threshold: depth.thresholdMeters,
+                                           near: CitrusSquadConfig.dangerNearMeters)
+        let filtered = avoidanceFilter.update(raw)
+        avoidanceRaw = raw.description
+        avoidanceFiltered = filtered.description
+        // Log on a state change, with the band values that produced it, so the bench can see exactly
+        // why a stop or a steer fired.
+        events.log("avoid",
+                   "\(filtered.description)  (L \(Self.fmt(bands.left)) C \(Self.fmt(bands.center)) R \(Self.fmt(bands.right)), thr \(String(format: "%.1f", depth.thresholdMeters)))",
+                   dedupKey: filtered.stateKey)
+
+        switch filtered {
+        case .clear:
+            return nil
+        case .steer(let side, let distance):
+            return ResolvedCue(event: .obstacleNear, mask: side,
+                               intensity: ResolvedCue.intensity(forDistance: distance), source: .hazard)
+        case .stop:
+            // Boxed in or too close: full-strength halt-and-reorient on the rotate motors.
+            return ResolvedCue(event: .turnAround, mask: .rotate, intensity: 255, source: .hazard)
+        }
+    }
+
+    private static func fmt(_ meters: Double) -> String {
+        meters < 0 ? "—" : String(format: "%.2f", meters)
     }
 
     /// The turn cue for the current drive mode, or nil.
@@ -214,7 +458,13 @@ final class AppModel {
             return route.currentCue
         case .simulate:
             guard let (point, heading) = simulator.step(dt: 0.1) else { return nil }
-            route.updateRoute(location: point, phoneHeading: heading)
+            // The simulator's heading is already body-forward, so do not apply compass calibration.
+            route.updateRoute(location: point, phoneHeading: heading, applyCalibration: false)
+            return route.currentCue
+        case .live:
+            // Field walk: follow the route from the real GPS fix and compass.
+            guard let fix = liveGeoPoint, location.trueHeading >= 0 else { return nil }
+            route.updateRoute(location: fix, phoneHeading: location.trueHeading)
             return route.currentCue
         }
     }

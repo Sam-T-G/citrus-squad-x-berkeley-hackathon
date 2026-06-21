@@ -34,10 +34,10 @@ struct BearingTests {
 
 /// Walks the quadrant table from `docs/04-phone-side.md`. These eight checks are the M4 gate.
 struct QuadrantMapperTests {
-    @Test func centerlineIsNoTap() {
-        #expect(QuadrantMapper.cue(forRelativeBearing: 0) == nil)
-        #expect(QuadrantMapper.cue(forRelativeBearing: 5) == nil)
-        #expect(QuadrantMapper.cue(forRelativeBearing: 355) == nil)
+    @Test func onCourseTapsForward() {
+        #expect(QuadrantMapper.cue(forRelativeBearing: 0) == Cue(event: .forward, mask: .front))
+        #expect(QuadrantMapper.cue(forRelativeBearing: 5) == Cue(event: .forward, mask: .front))
+        #expect(QuadrantMapper.cue(forRelativeBearing: 355) == Cue(event: .forward, mask: .front))
     }
 
     @Test func slightRight() {
@@ -45,18 +45,125 @@ struct QuadrantMapperTests {
     }
 
     @Test func sharpRight() {
-        #expect(QuadrantMapper.cue(forRelativeBearing: 90) == Cue(event: .turnNow, mask: .farRight))
+        #expect(QuadrantMapper.cue(forRelativeBearing: 90) == Cue(event: .turnNow, mask: .right))
     }
 
     @Test func turnAround() {
-        #expect(QuadrantMapper.cue(forRelativeBearing: 180) == Cue(event: .turnAround, mask: .bothFar))
+        #expect(QuadrantMapper.cue(forRelativeBearing: 180) == Cue(event: .turnAround, mask: .rotate))
     }
 
     @Test func sharpLeft() {
-        #expect(QuadrantMapper.cue(forRelativeBearing: 270) == Cue(event: .turnNow, mask: .farLeft))
+        #expect(QuadrantMapper.cue(forRelativeBearing: 270) == Cue(event: .turnNow, mask: .left))
     }
 
     @Test func slightLeft() {
         #expect(QuadrantMapper.cue(forRelativeBearing: 320) == Cue(event: .turnSlight, mask: .left))
+    }
+}
+
+/// The client-side trip math that drives the nav banner. Pure, so it is unit-tested; it never
+/// touches Google, so the ETA and remaining-distance read-outs cost nothing.
+struct TripMathTests {
+    // A straight 0.2 degree run of longitude at the equator is close to 22.2 km, in two equal legs.
+    private let leg = [
+        GeoPoint(latitude: 0.0, longitude: 0.0),
+        GeoPoint(latitude: 0.0, longitude: 0.1),
+        GeoPoint(latitude: 0.0, longitude: 0.2),
+    ]
+
+    @Test func remainingSumsTheLegsAhead() {
+        // Standing on the very first waypoint, the whole route is still ahead.
+        let total = RouteMath.remainingDistance(from: leg[0], along: leg, segmentIndex: 0)
+        let direct = Bearing.distance(from: leg[0].coordinate, to: leg[1].coordinate)
+            + Bearing.distance(from: leg[1].coordinate, to: leg[2].coordinate)
+        #expect(abs(total - direct) < 1.0)
+    }
+
+    @Test func remainingMeasuresFromLivePosition() {
+        // Halfway along the second leg, only that half remains.
+        let half = GeoPoint(latitude: 0.0, longitude: 0.15)
+        let remaining = RouteMath.remainingDistance(from: half, along: leg, segmentIndex: 1)
+        let expected = Bearing.distance(from: half.coordinate, to: leg[2].coordinate)
+        #expect(abs(remaining - expected) < 1.0)
+    }
+
+    @Test func remainingIsZeroPastTheEnd() {
+        #expect(RouteMath.remainingDistance(from: leg[2], along: leg, segmentIndex: 2) == 0)
+        #expect(RouteMath.remainingDistance(from: leg[0], along: [], segmentIndex: 0) == 0)
+    }
+
+    @Test func etaScalesWithDistanceAndSpeed() {
+        #expect(RouteMath.walkingETASeconds(forDistance: 130, speedMetersPerSecond: 1.3) == 100)
+        #expect(RouteMath.walkingETASeconds(forDistance: 0) == 0)
+        #expect(RouteMath.walkingETASeconds(forDistance: 100, speedMetersPerSecond: 0) == 0)
+    }
+}
+
+/// The path-following geometry that makes the belt trace the drawn route. All pure, so it is the
+/// high-value place to test the new pure-pursuit behavior without a device.
+struct PathFollowingTests {
+    @Test func decodesGooglePolylineGoldenVector() {
+        // The canonical example from Google's encoded-polyline documentation.
+        let points = Polyline.decode("_p~iF~ps|U_ulLnnqC_mqNvxq`@")
+        #expect(points.count == 3)
+        #expect(abs(points[0].latitude - 38.5) < 1e-5)
+        #expect(abs(points[0].longitude - (-120.2)) < 1e-5)
+        #expect(abs(points[1].latitude - 40.7) < 1e-5)
+        #expect(abs(points[2].latitude - 43.252) < 1e-5)
+        #expect(abs(points[2].longitude - (-126.453)) < 1e-5)
+    }
+
+    @Test func projectsOntoNearestSegment() {
+        // North-running segment; a point to the east projects back onto the line.
+        let path = [GeoPoint(latitude: 0, longitude: 0), GeoPoint(latitude: 0.001, longitude: 0)]
+        let off = GeoPoint(latitude: 0.0005, longitude: 0.0002)
+        let projection = Bearing.closestPoint(on: path, to: off)
+        #expect(projection != nil)
+        #expect(abs(projection!.point.longitude - 0) < 1e-6)        // foot is back on the line
+        #expect(abs(projection!.point.latitude - 0.0005) < 1e-4)    // halfway up
+        #expect(projection!.distanceMeters > 10)                    // ~22 m east of the line
+    }
+
+    @Test func lookAheadRoundsTheCorner() {
+        // L path: north then east. From the start, a look-ahead longer than the first leg should
+        // land on the east leg, proving it follows the path around the corner instead of cutting.
+        let path = [
+            GeoPoint(latitude: 0, longitude: 0),
+            GeoPoint(latitude: 0.001, longitude: 0),        // ~111 m north (the corner)
+            GeoPoint(latitude: 0.001, longitude: 0.001),    // ~111 m east
+        ]
+        let projection = Bearing.closestPoint(on: path, to: path[0])!
+        let target = Bearing.point(on: path, aheadOf: projection, by: 150)
+        #expect(abs(target.latitude - 0.001) < 1e-4)   // reached the corner's latitude
+        #expect(target.longitude > 0.0002)             // and turned east along the second leg
+    }
+
+    @Test func lookAheadClampsToEnd() {
+        let path = [GeoPoint(latitude: 0, longitude: 0), GeoPoint(latitude: 0, longitude: 0.001)]
+        let projection = Bearing.closestPoint(on: path, to: path[0])!
+        let target = Bearing.point(on: path, aheadOf: projection, by: 10_000)
+        #expect(abs(target.longitude - 0.001) < 1e-9)   // clamped to the final vertex
+    }
+
+    @Test func pivotsFindACornerNotStraightRuns() {
+        // An L path: north then east. Exactly one real corner, no false pivots on the straight runs.
+        let lPath = [
+            GeoPoint(latitude: 0, longitude: 0),
+            GeoPoint(latitude: 0.0005, longitude: 0),       // north
+            GeoPoint(latitude: 0.001, longitude: 0),        // north (corner is the next vertex)
+            GeoPoint(latitude: 0.001, longitude: 0.0005),   // east
+            GeoPoint(latitude: 0.001, longitude: 0.001),    // east
+        ]
+        #expect(RouteMath.pivots(from: lPath) == [2])
+    }
+
+    @Test func demoRouteIsAStraightWalk() {
+        // The Bancroft Way demo route is collinear, so it has no corners.
+        #expect(RouteMath.pivots(from: RouteMath.demoRoute).isEmpty)
+    }
+
+    @Test func signedDeltaTakesTheShortWay() {
+        #expect(abs(RouteMath.signedDelta(from: 350, to: 10) - 20) < 1e-9)
+        #expect(abs(RouteMath.signedDelta(from: 10, to: 350) - (-20)) < 1e-9)
     }
 }

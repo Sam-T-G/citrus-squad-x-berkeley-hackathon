@@ -33,9 +33,46 @@ enum CitrusSquadConfig {
     /// Lowest tap strength a graded hazard cue ever uses, so it is always felt.
     static let intensityFloor: UInt8 = 96
 
+    // Vision person-in-path tier (docs/12 §6, mirrors the cv/ Python defaults)
+    /// YOLO person-detection confidence floor. Cole's `cv/` default; err low, a missed person is
+    /// worse than a false tap for a safety device.
+    static let visionConfidenceThreshold: Float = 0.35
+    /// Inner-crop fraction of the person box used to sample depth, dodging LiDAR edge bleed.
+    static let depthCropRatio = 0.5
+    /// Person detection rate. The decide loop stays at 10 Hz; running YOLO slower protects thermals.
+    static let visionMaxHz = 4.0
+    /// Frames a person must persist in range before the cue fires.
+    static let visionSettleFrames = 3
+    /// Distance band past the threshold that keeps a firing cue alive, to stop edge flicker.
+    static let visionHysteresisMeters = 0.3
+    /// Minimum time between cue fire-or-clear transitions.
+    static let visionRefractorySeconds = 1.0
+
+    // Obstacle avoidance (LiDAR safety layer, sits above navigation, below the person tier)
+    /// Consecutive 10 Hz ticks an obstacle must persist before the avoidance cue activates.
+    static let obstacleSettleTicks = 2
+    /// Ticks a clear reading must persist before the avoidance cue releases, to stop flicker.
+    static let obstacleHoldTicks = 3
+    /// A side needs at least this much clearance to count as a way through. With the path ahead
+    /// blocked and both sides closer than this, the layer stops instead of steering. Below the
+    /// detection threshold, so a side can have a return and still be passable.
+    static let avoidanceMinSideClearance = 1.0
+
     // Navigation
     /// How close to a maneuver point counts as reaching it (advance to the next).
     static let maneuverArriveMeters = 2.0
     /// Virtual walking speed for the route simulator, meters per second.
     static let walkingSpeed = 1.3
+
+    // Path following (pure pursuit)
+    /// How far ahead along the path the steering aims. Larger smooths the line and rounds corners
+    /// sooner; smaller hugs the path more tightly but jitters. ~8 m suits a walking pace.
+    static let lookAheadMeters = 8.0
+    /// Heading swing between path segments that counts as a real corner (pivot) for the banner.
+    static let pivotThresholdDegrees = 25.0
+    /// Within this distance of the final point, the route is done and the belt cues `arrived`.
+    static let pathArriveMeters = 4.0
+    /// Off-path distance past which guidance steers back toward the line (and a reroute belongs).
+    /// Reuses the existing reroute deviation budget.
+    static let onPathToleranceMeters = rerouteDeviationMeters
 }

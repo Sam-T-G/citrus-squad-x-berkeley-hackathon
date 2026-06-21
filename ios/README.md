@@ -58,7 +58,9 @@ Tests/
 
 ## Cost control (Maps API)
 
-The Google Directions API is the only paid call in the app. Everything else (the belt link, the sensors, the simulator) is local and free. Two layers keep the bill from running away.
+The app shows a live Google map in the Demo tab and fetches walking routes from Google. Of those, **only the Directions route fetch is billed.** Rendering the map, the blue my-location dot, the camera follow, the route line and markers, the tap-to-set-destination, and the navigation banner are all free: the Maps SDK for iOS does not charge per map load on mobile, and the my-location dot reads CoreLocation locally with no API call. Everything else (the belt link, the sensors, the simulator) is local and free too. So the one paid surface is the same as before, and it stays governed.
+
+**What we deliberately do NOT use** (each is a separate paid API): Geocoding, Places / address autocomplete, the Routes API, and the Navigation SDK. The destination is set by typing `lat,lng` or tapping the map, so no geocoding is ever called. Keep it that way.
 
 **Client side, in `DirectionsService`:**
 
@@ -68,15 +70,16 @@ The Google Directions API is the only paid call in the app. Everything else (the
 - **Hard caps.** Per-session and per-day call ceilings. Once hit, calls are refused, not queued.
 - **No automatic retries.** A failure never silently re-spends; you re-trigger by hand.
 
-The Maps section of the diagnostics screen shows calls this session, calls today, cache hits, and cached routes, plus a "Clear route cache" button. The caps live in `DirectionsService.Policy`.
+The Maps section of the diagnostics screen shows calls this session, calls today, cache hits, and cached routes, plus a "Clear route cache" button. The caps live in `DirectionsService.Policy`. One key powers both the map and the Directions call; enable both on it.
 
-**Server side, in Google Cloud (do this, it is the real backstop):** client guards do not protect a key that someone copies. Set these once in the Cloud console:
+**Server side, in Google Cloud (do this, it is the real backstop):** client guards do not protect a key that someone copies. "You are financially responsible for charges caused by abuse of unrestricted API keys." Set these once in the Cloud console:
 
-1. **Restrict the key** to the Directions API and to this iOS app's bundle id (`com.samuelgerungan.CitrusSquad`).
-2. **Set a daily quota** on the Directions API (APIs & Services → Directions API → Quotas). A few hundred requests a day is plenty for the hack and caps the worst case.
-3. **Set a billing budget and alert** (Billing → Budgets & alerts) so you get an email well before any real spend.
+1. **Restrict the key by application** to iOS apps and this app's bundle id (`com.samuelgerungan.CitrusSquad`).
+2. **Restrict the key by API** to exactly two: **Maps SDK for iOS** and **Directions API**. Leave Geocoding, Places, Routes, and Navigation SDK off, so a stray call to a paid extra fails instead of billing.
+3. **Set a daily quota** on the Directions API (APIs & Services → Directions API → Quotas). A few hundred requests a day is plenty for the hack and caps the worst case. The Maps SDK needs no quota cap because mobile map loads are not billed.
+4. **Set a billing budget and alert** (Billing → Budgets & alerts), for example $5–$10, so you get an email well before any real spend.
 
-A key with no quota is what runs up a bill. The quota is the guarantee; the client guards just keep normal use cheap.
+A key with no quota is what runs up a bill. The quota is the guarantee; the client guards just keep normal use cheap. Because map rendering is free, the map view is safe to leave on for the whole demo.
 
 ## Notes
 

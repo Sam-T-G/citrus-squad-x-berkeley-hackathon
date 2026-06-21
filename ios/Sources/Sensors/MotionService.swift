@@ -32,6 +32,15 @@ final class MotionService {
         gyroAvailable = motion.isGyroAvailable
     }
 
+    /// Wearer turn rate about the vertical axis, in radians per second. The early-warning layer uses
+    /// it to discount "constant bearing" readings that are really the wearer panning the camera.
+    ///
+    /// CALIBRATION: this assumes the phone is mounted upright in portrait, so body yaw is rotation
+    /// about the device's long axis (`gyroY`). If the belt mount tilts the phone, the yaw axis is a
+    /// blend of `gyroY` and `gyroZ`; confirm on device by turning in place and watching this value
+    /// spike. Sign does not matter, the gate reads the magnitude.
+    var yawRateRadPerSecond: Double { gyroY }
+
     /// Achieved accelerometer rate over the run, in Hz. Confirms we hit the 50 Hz target.
     var accelRateHz: Double {
         guard let start = startTime, accelSamples > 0 else { return 0 }

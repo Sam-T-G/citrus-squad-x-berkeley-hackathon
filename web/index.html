@@ -1,0 +1,360 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>CitrusSquad — team build status</title>
+<style>
+  :root {
+    --citrus: #ff8c2b;
+    --citrus-deep: #e6720f;
+    --leaf: #2fa84f;
+    --amber: #f0a500;
+    --slate: #6b7280;
+    --ink: #1b1d22;
+    --paper: #fbfaf7;
+    --card: #ffffff;
+    --line: #ececec;
+    --blue: #2f7de1;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    color: var(--ink);
+    background: var(--paper);
+    line-height: 1.55;
+  }
+  .wrap { max-width: 980px; margin: 0 auto; padding: 0 20px 80px; }
+  header {
+    background: linear-gradient(135deg, var(--citrus) 0%, var(--citrus-deep) 60%, #d65b00 100%);
+    color: #fff;
+    padding: 44px 20px 38px;
+  }
+  header .inner { max-width: 980px; margin: 0 auto; }
+  header h1 { margin: 0; font-size: 2.6rem; letter-spacing: -0.5px; }
+  header .tag { font-size: 1.05rem; opacity: 0.95; margin-top: 4px; }
+  header .meta { margin-top: 16px; font-size: 0.85rem; opacity: 0.9; }
+  .pill {
+    display: inline-block; background: rgba(255,255,255,0.2);
+    padding: 3px 10px; border-radius: 999px; font-size: 0.78rem; margin-right: 6px;
+  }
+  h2 {
+    font-size: 1.45rem; margin: 46px 0 14px; padding-bottom: 8px;
+    border-bottom: 2px solid var(--line);
+  }
+  h3 { font-size: 1.1rem; margin: 22px 0 8px; }
+  p { margin: 10px 0; }
+  a { color: var(--citrus-deep); }
+  code {
+    background: #f3f1ec; padding: 1px 6px; border-radius: 5px;
+    font-family: "SF Mono", Menlo, Consolas, monospace; font-size: 0.86em;
+  }
+  pre {
+    background: var(--ink); color: #f4f4f4; padding: 16px 18px; border-radius: 12px;
+    overflow-x: auto; font-family: "SF Mono", Menlo, Consolas, monospace; font-size: 0.85rem;
+    line-height: 1.5;
+  }
+  .legend { display: flex; gap: 18px; flex-wrap: wrap; margin: 18px 0 0; font-size: 0.85rem; }
+  .dot { display: inline-block; width: 10px; height: 10px; border-radius: 50%; margin-right: 6px; vertical-align: middle; }
+  .dot.done { background: var(--leaf); }
+  .dot.wip  { background: var(--amber); }
+  .dot.next { background: var(--slate); }
+  .badge {
+    display: inline-block; font-size: 0.72rem; font-weight: 700; text-transform: uppercase;
+    letter-spacing: 0.4px; padding: 2px 8px; border-radius: 6px; color: #fff; vertical-align: middle;
+  }
+  .badge.done { background: var(--leaf); }
+  .badge.wip  { background: var(--amber); }
+  .badge.next { background: var(--slate); }
+
+  .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 16px; margin-top: 16px; }
+  .card {
+    background: var(--card); border: 1px solid var(--line); border-radius: 14px; padding: 18px 20px;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.04);
+  }
+  .card h3 { margin-top: 0; }
+  .who { font-size: 0.82rem; color: var(--slate); margin: 2px 0 10px; }
+
+  /* architecture diagram */
+  .flow { display: flex; align-items: stretch; gap: 0; flex-wrap: wrap; margin-top: 16px; }
+  .node {
+    flex: 1; min-width: 190px; background: var(--card); border: 2px solid var(--line);
+    border-radius: 14px; padding: 16px;
+  }
+  .node.phone { border-color: var(--blue); }
+  .node.belt { border-color: var(--citrus); }
+  .node.servos { border-color: var(--leaf); }
+  .node h4 { margin: 0 0 6px; font-size: 1rem; }
+  .node ul { margin: 6px 0 0; padding-left: 18px; font-size: 0.84rem; color: #444; }
+  .arrow {
+    align-self: center; padding: 0 14px; color: var(--slate); font-size: 0.78rem; text-align: center;
+    min-width: 120px;
+  }
+  .arrow .big { font-size: 1.6rem; line-height: 1; color: var(--citrus-deep); }
+  @media (max-width: 760px) {
+    .arrow { transform: rotate(90deg); min-width: 0; padding: 8px 0; }
+  }
+
+  ul.checks { list-style: none; padding: 0; }
+  ul.checks li { padding: 7px 0; border-bottom: 1px dashed var(--line); }
+  ul.checks li:last-child { border-bottom: none; }
+
+  .note {
+    background: #fff7ec; border: 1px solid #ffd9a8; border-radius: 12px;
+    padding: 12px 16px; margin: 16px 0; font-size: 0.92rem;
+  }
+  footer { color: var(--slate); font-size: 0.82rem; margin-top: 50px; border-top: 1px solid var(--line); padding-top: 18px; }
+</style>
+</head>
+<body>
+<header>
+  <div class="inner">
+    <h1>🍊 CitrusSquad</h1>
+    <div class="tag">Haptic navigation belt for blind and low-vision wearers. Berkeley AI Hackathon 2026.</div>
+    <div class="meta">
+      <span class="pill">Team build status</span>
+      <span class="pill">Updated June 20, 2026 — branch audit</span>
+      <span class="pill">Track: Ddoski's Lab</span>
+    </div>
+  </div>
+</header>
+
+<div class="wrap">
+
+  <p style="margin-top:26px; font-size:1.05rem;">
+    This page is the team's read on how the system fits together and where the build stands right now.
+    The product taps the wearer in the direction of their next turn, and warns them when something is in
+    the way. The phone is the brain. The belt is the muscle.
+  </p>
+
+  <div class="legend">
+    <span><span class="dot done"></span>Working now</span>
+    <span><span class="dot wip"></span>In progress</span>
+    <span><span class="dot next"></span>Next up</span>
+  </div>
+
+  <h2>What we are building</h2>
+  <p>
+    A teammate wears a belt with four tap motors (far-left, left, right, far-right) and a phone mounted on
+    the chest facing forward. The phone reads the route and the wearer's heading, works out which way they
+    need to turn, and taps the matching side of the belt. Its LiDAR and camera watch for obstacles and fire
+    a stronger tap when something is close. No audio, no looking at a screen.
+  </p>
+
+  <h2>How the pieces connect</h2>
+  <div class="flow">
+    <div class="node phone">
+      <h4>📱 Phone <span class="badge done">brain</span></h4>
+      <ul>
+        <li>GPS + compass (heading)</li>
+        <li>LiDAR depth (obstacles)</li>
+        <li>Camera + vision (objects)</li>
+        <li>Maps + route logic</li>
+        <li>Decides one cue, 10x/sec</li>
+      </ul>
+    </div>
+    <div class="arrow">
+      <div class="big">→</div>
+      Wi-Fi (UDP)<br>4-byte LC2 packet<br><em>wireless, no cable</em>
+    </div>
+    <div class="node belt">
+      <h4>🔌 ESP32 <span class="badge wip">muscle</span></h4>
+      <ul>
+        <li>Listens for LC2 packets</li>
+        <li>Turns events into tap patterns</li>
+        <li>Goes quiet if the link drops</li>
+      </ul>
+    </div>
+    <div class="arrow">
+      <div class="big">→</div>
+      PWM signal<br>(wires)
+    </div>
+    <div class="node servos">
+      <h4>🪢 4 servos <span class="badge wip">taps</span></h4>
+      <ul>
+        <li>Front, left, right, back</li>
+        <li>Left/right rotate, front forward, back proximity</li>
+        <li>Tap on the wearer's torso</li>
+      </ul>
+    </div>
+  </div>
+  <div class="note">
+    The only cables are power into the ESP32 and the four servo wires. The phone talks to the belt over
+    the air, so nothing plugs into the phone during use.
+  </div>
+
+  <h2>How a cue gets decided</h2>
+  <p>Every tenth of a second the phone runs one loop:</p>
+  <pre>route or simulator  ──┐
+                      ├─►  decide one cue  ──►  belt (taps)
+LiDAR + camera  ──────┘     safety beats        audio (optional)
+   (hazards)               direction            demo screen</pre>
+  <p>
+    Safety wins: if something is close, the belt warns about the obstacle instead of the turn, then goes
+    back to directions once the path is clear. Whatever the phone decides goes out to every output at once,
+    so the belt, the on-screen demo, and the (optional) audio all stay in sync.
+  </p>
+
+  <h2>The phone app</h2>
+  <div class="cards">
+    <div class="card">
+      <h3>Operate</h3>
+      <p>The clean demo screen. One big cue (turn left, slight right, obstacle, arrived) with connect,
+      calibrate, and run. The phone buzzes in time with the belt, so it reads even without the hardware.</p>
+    </div>
+    <div class="card">
+      <h3>Demo</h3>
+      <p>The visualizer for the audience: a map with position and route, the camera with vision boxes drawn
+      on it, and the live LiDAR depth bands. Shows what the phone sees.</p>
+    </div>
+    <div class="card">
+      <h3>Diagnostics</h3>
+      <p>The bench console: every sensor read out raw, the belt link, the nav math, a route simulator, the
+      Maps usage counters, and a thermal soak test.</p>
+    </div>
+  </div>
+
+  <h2>Run it on your own phone</h2>
+  <p>Each of us runs our own instance. Full guide is in <code>RUNNING.md</code>. The short version:</p>
+  <pre>git clone &lt;repo&gt; &amp;&amp; cd citrus-squad-x-berkeley-hackathon
+./ios/setup.sh                 # installs XcodeGen, makes your local config, builds the project
+# edit ios/Local.xcconfig: set DEVELOPMENT_TEAM and APP_BUNDLE_ID (com.yourname.CitrusSquad)
+./ios/setup.sh &amp;&amp; open ios/CitrusSquad.xcodeproj
+# pick your iPhone, press Cmd-R</pre>
+  <p>
+    You do not need the belt or a Maps key to develop. Open <strong>Diagnostics → Navigation</strong>, tap
+    <strong>Load demo route</strong>, switch to <strong>Simulate</strong>, and hit <strong>Run sim</strong>.
+    The whole route-to-cue path runs in software.
+  </p>
+
+  <h2>Who owns what</h2>
+  <div class="cards">
+    <div class="card">
+      <h3>Sam</h3>
+      <div class="who">Phone app + navigation + integration</div>
+      <p>The iOS app, the Maps and route logic, the simulator, and the perception arbitration that turns
+      everyone's signals into one cue. Owns <code>ios/</code> and the plug points below.</p>
+    </div>
+    <div class="card">
+      <h3>Cole &amp; Josh</h3>
+      <div class="who">Computer vision + object detection</div>
+      <p>Cole has a Python YOLOv8n + LiDAR-depth pipeline running with a WebSocket server and 17 tests.
+      Josh is pairing on CV. The app exposes <code>DetectionStore</code> (boxes on the Demo camera) and
+      <code>VisionHazardSource</code> (belt warning); connecting Cole's pipeline to them is the open
+      integration step (see Decisions below).</p>
+    </div>
+    <div class="card">
+      <h3>Angelo</h3>
+      <div class="who">Belt hardware + firmware</div>
+      <p>The ESP32 and the four servos. The interface is the 4-byte LC2 packet over Wi-Fi. A working
+      reference firmware is in <code>firmware/citrus_squad_belt/</code> to adapt.</p>
+    </div>
+  </div>
+
+  <h2>Plug points for the vision work</h2>
+  <p>The app is built so Cole and Josh's model drops in without touching the core loop:</p>
+  <pre>// 1. Draw boxes on the Demo camera (normalized 0..1 rectangles)
+model.detections.update([
+  Detection(label: "person", confidence: 0.92, box: CGRect(x: 0.3, y: 0.3, width: 0.3, height: 0.5))
+])
+
+// 2. Fire a belt warning when a person is in the path
+model.vision.report(kind: .person, side: .centerMass, distanceMeters: 1.8)
+
+// 3. Need raw frames? Attach an output to the shared session
+model.camera.session   // add an AVCaptureVideoDataOutput here</pre>
+  <div class="note">
+    One hardware note for the vision work: the rear camera is exclusive, so ARKit LiDAR depth and the
+    camera cannot both run at the same instant yet. Moving depth to AVFoundation would let one session feed
+    both. It is on the list.
+  </div>
+
+  <h2>Branch audit <span style="font-size:0.8rem; color:var(--slate); font-weight:400;">June 20</span></h2>
+  <div class="cards">
+    <div class="card">
+      <h3>main</h3>
+      <div class="who">merged baseline</div>
+      <p>The runnable app, the team run pipeline, the reference firmware, and the docs. Everyone branches off this.</p>
+    </div>
+    <div class="card">
+      <h3>sam/ios-app-base <span class="badge done">active</span></h3>
+      <div class="who">Sam · iOS app</div>
+      <p>Cost-capped Maps, the Operate / Demo / Diagnostics tabs, the belt visualization, calibration polish, and the front/back/left/right app layout (the firmware and protocol side captured as a proposal, not edited).</p>
+    </div>
+    <div class="card">
+      <h3>cole/computer-vision <span class="badge wip">active</span></h3>
+      <div class="who">Cole · CV layer (Python)</div>
+      <p>YOLOv8n + LiDAR depth fusion, a FastAPI WebSocket server, a webcam smoke test, and 17 passing tests. Reports each obstacle's class, depth, and horizontal position. Includes a CoreML export script for an on-device path.</p>
+    </div>
+    <div class="card">
+      <h3>josh/web-app <span class="badge next">idle</span></h3>
+      <div class="who">Josh · pairing on CV</div>
+      <p>Currently reverted to match main, no distinct work pushed. Josh is on computer vision with Cole and needs a clear slice to own.</p>
+    </div>
+    <div class="card">
+      <h3>no branch yet <span class="badge next">not started</span></h3>
+      <div class="who">Angelo · belt firmware</div>
+      <p>Nothing pushed. The reference firmware and the motor-layout proposal are waiting in the repo to adapt onto the real ESP32 and servos.</p>
+    </div>
+  </div>
+
+  <h2>Decisions and blockers</h2>
+  <div class="note">
+    <strong>1. How does the vision reach the app?</strong> Cole's CV runs off-device today: the phone
+    streams RGB + LiDAR frames over WebSocket to a laptop running the Python server, which streams
+    detections back. The app's current seams (<code>DetectionStore</code>, <code>VisionHazardSource</code>)
+    are on-device. Pick one path to close the gap:
+    <ul>
+      <li><strong>Server path:</strong> add a WebSocket sender and receiver to the Swift app. The frame
+      format and the <code>/haptics</code> JSON are already defined in Cole's HANDOFF. Fast to wire, but
+      the demo then depends on a laptop and the venue Wi-Fi.</li>
+      <li><strong>On-device path:</strong> run Cole's YOLOv8n as CoreML on the phone (his export script is
+      ready) and feed <code>DetectionStore</code> directly. No laptop, a bit more setup.</li>
+    </ul>
+  </div>
+  <ul class="checks">
+    <li><span class="dot next"></span> <strong>Roles:</strong> Cole's notes have Josh owning the iOS/Swift app, but that is Sam's lane. Confirm: Sam = app, Cole = CV, Josh = which CV slice, Angelo = belt.</li>
+    <li><span class="dot next"></span> <strong>Firmware:</strong> Angelo to adopt the front/back/left/right motor proposal (<code>proposals/</code>) and push a branch.</li>
+    <li><span class="dot next"></span> <strong>Wire format:</strong> confirm Cole's <code>/frames</code> layout and the real LiDAR depth resolution (256x192 assumed) against the live iPhone stream.</li>
+  </ul>
+
+  <h2>Where the build stands</h2>
+
+  <h3>Working now <span class="badge done">done</span></h3>
+  <ul class="checks">
+    <li><span class="dot done"></span> iOS app runs on device with three tabs (Operate, Demo, Diagnostics)</li>
+    <li><span class="dot done"></span> Heading, GPS, and motion sensors live</li>
+    <li><span class="dot done"></span> LiDAR depth in three bands (left / center / right), with a directional obstacle cue</li>
+    <li><span class="dot done"></span> LC2 protocol, the UDP link, and a reference ESP32 firmware</li>
+    <li><span class="dot done"></span> Navigation math, a software route simulator, and the Google Maps client</li>
+    <li><span class="dot done"></span> Demo visualizer: map, camera with box overlay, depth bands</li>
+    <li><span class="dot done"></span> Calibration confirmation (chime, haptic, screen flash) and cue-synced haptics</li>
+    <li><span class="dot done"></span> One-command team setup, onboarding docs, and Maps cost caps</li>
+  </ul>
+
+  <h3>In progress <span class="badge wip">now</span></h3>
+  <ul class="checks">
+    <li><span class="dot wip"></span> Cole: CV layer built and tested (17 passing); off-device server plus a CoreML export ready</li>
+    <li><span class="dot wip"></span> Sam: app on the new front/back/left/right layout with the belt visualization; firmware change is a proposal</li>
+    <li><span class="dot wip"></span> Josh: pairing on CV, slice to own still to be picked</li>
+  </ul>
+
+  <h3>Next up <span class="badge next">soon</span></h3>
+  <ul class="checks">
+    <li><span class="dot next"></span> Decide the CV integration path (laptop server vs on-device CoreML) and wire the Swift side to it</li>
+    <li><span class="dot next"></span> Angelo: push a firmware branch and adopt the motor-layout proposal on the real ESP32 + servos</li>
+    <li><span class="dot next"></span> Obstacle false-positive discipline (settle, hysteresis, refractory) so it never cries wolf</li>
+    <li><span class="dot next"></span> Live GPS route mode end to end (real walk drives the cues)</li>
+    <li><span class="dot next"></span> One camera session feeding both depth and vision at the same time</li>
+  </ul>
+
+  <footer>
+    Repo: <code>Sam-T-G/citrus-squad-x-berkeley-hackathon</code> ·
+    To reopen this page: <code>open web/index.html</code> ·
+    Built for the team, June 20, 2026.
+  </footer>
+
+</div>
+</body>
+</html>

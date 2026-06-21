@@ -2,6 +2,8 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
+	<key>AnthropicAPIKey</key>
+	<string>$(ANTHROPIC_API_KEY)</string>
 	<key>CFBundleDevelopmentRegion</key>
 	<string>$(DEVELOPMENT_LANGUAGE)</string>
 	<key>CFBundleDisplayName</key>
@@ -20,10 +22,14 @@
 	<string>1.0</string>
 	<key>CFBundleVersion</key>
 	<string>1</string>
+	<key>DeepgramAPIKey</key>
+	<string>$(DEEPGRAM_API_KEY)</string>
 	<key>NSCameraUsageDescription</key>
 	<string>CitrusSquad uses the LiDAR depth camera to sense nearby obstacles.</string>
 	<key>NSLocationWhenInUseUsageDescription</key>
 	<string>CitrusSquad reads heading and GPS to compute which way to turn.</string>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>CitrusSquad listens while you hold the talk button, so you can speak a destination or ask what is around you.</string>
 	<key>NSMotionUsageDescription</key>
 	<string>CitrusSquad reads the accelerometer and gyroscope for motion features.</string>
 	<key>UIApplicationSceneManifest</key>

@@ -1,7 +1,13 @@
 import Foundation
 import ARKit
+import CoreImage
+import ImageIO
 import Observation
 import os
+
+/// CGImage is immutable once created, so it is safe to carry across the hop from the perception
+/// queue to the main actor.
+private struct SendableImage: @unchecked Sendable { let image: CGImage }
 
 /// Nearest depth in each of three vertical bands of the frame, in meters. -1 means no valid read.
 struct BandDepths: Sendable, Equatable {
@@ -23,14 +29,57 @@ final class DepthService: NSObject {
     private let session = ARSession()
     private let log = Logger(subsystem: "com.samuelgerungan.CitrusSquad", category: "depth")
 
+    /// One serial queue carries every ARFrame, so the depth band scan and the heavier vision
+    /// inference both run off the main thread. The delegate's `nonisolated(unsafe)` state is touched
+    /// only here, which is what makes that annotation sound.
+    private let perceptionQueue = DispatchQueue(label: "com.citrussquad.perception", qos: .userInitiated)
+
     /// Throttle: process roughly every sixth frame, so a 60 Hz AR feed drives a ~10 Hz read.
     /// ARKit delivers frames on one serial queue, so this counter is only ever touched there.
     /// Kept out of observation so it stays a plain stored property the delegate can mutate.
     @ObservationIgnored nonisolated(unsafe) private var frameTick = 0
 
+    /// Person-in-path detector. The same ARFrame carries the RGB image and the depth map, so one
+    /// ARSession feeds both tiers; there is no second camera. It is `Sendable` and its own state is
+    /// confined to the perception queue, so a plain `let` reads cleanly from the delegate. See
+    /// `Perception/PersonDetector.swift` and `CV-PORT-PLAN.md`.
+    private let personDetector = PersonDetector()
+
+    /// Gate for the camera tier, toggled off the main actor by the thermal degrade ladder.
+    @ObservationIgnored nonisolated(unsafe) var visionEnabled = true
+
+    /// Where a resolved person cue and the overlay boxes go. Set once by `AppModel.attachVision`.
+    private weak var visionSink: VisionHazardSource?
+    private weak var detectionStore: DetectionStore?
+
+    /// Early-warning layer (diagnostics only in this step). The tracker watches the per-frame boxes
+    /// for an object holding the wearer's heading and growing, and flags it before LiDAR has a return.
+    /// It runs on the main actor inside `applyVision`, where the boxes and the yaw rate are both in
+    /// reach, so it stays off the heavy perception queue. See `Perception/BearingTracker.swift`.
+    private let bearingTracker = BearingTracker()
+    private var bearingFrameIndex = 0
+    private weak var interferenceStore: InterferenceStore?
+
+    /// Wearer yaw rate in rad/s, refreshed each decide tick by `AppModel` from `MotionService`. Feeds
+    /// the tracker's self-rotation gate so a head turn does not read as a centered obstacle.
+    var latestYawRate: Double = 0
+
+    /// Rear camera in portrait. The one runtime unknown; see `PersonDetector.toNativeNormalized`.
+    nonisolated private static let cameraOrientation: CGImagePropertyOrientation = .right
+    nonisolated private static let visionThrottle = 1.0 / CitrusSquadConfig.visionMaxHz
+
     private(set) var isRunning = false
     private(set) var bands = BandDepths()
     private(set) var lastError: String?
+
+    /// A downscaled RGB frame for the demo preview, taken from the same ARFrame the depth and the
+    /// detector use. Nil when depth is not running. This is what lets the camera panel show the live
+    /// feed while LiDAR and the person tier run, with no second capture session to contend over the
+    /// rear camera.
+    private(set) var previewImage: CGImage?
+
+    /// CIContext is documented thread-safe for rendering, so the perception queue uses it directly.
+    nonisolated(unsafe) private let ciContext = CIContext(options: nil)
 
     /// Fire the obstacle flag inside this range. Tunable; demo default from `docs/12`.
     var thresholdMeters: Double = CitrusSquadConfig.proximityThresholdMeters
@@ -49,6 +98,15 @@ final class DepthService: NSObject {
     override init() {
         super.init()
         session.delegate = self
+        session.delegateQueue = perceptionQueue
+    }
+
+    /// Wire the person tier to its sink, the demo overlay, and the early-warning surface. Called once
+    /// by `AppModel`.
+    func attachVision(sink: VisionHazardSource, store: DetectionStore, interference: InterferenceStore) {
+        visionSink = sink
+        detectionStore = store
+        interferenceStore = interference
     }
 
     func start() {
@@ -65,6 +123,7 @@ final class DepthService: NSObject {
     func stop() {
         session.pause()
         isRunning = false
+        previewImage = nil
     }
 }
 
@@ -74,6 +133,51 @@ extension DepthService: ARSessionDelegate {
         guard frameTick % 6 == 0, let depth = frame.sceneDepth?.depthMap else { return }
         let sampled = Self.bandedNearest(in: depth)
         Task { @MainActor in self.bands = sampled }
+
+        // Publish a downscaled preview from the same frame so the demo shows the camera, LiDAR, and
+        // the detector from one session. Throttled below the band rate; it is cosmetic, so it is the
+        // first thing to shed under load.
+        if frameTick % 12 == 0, let cg = Self.previewImage(from: frame.capturedImage, context: ciContext) {
+            let wrapped = SendableImage(image: cg)
+            Task { @MainActor in self.previewImage = wrapped.image }
+        }
+
+        // Person tier off the same frame: RGB for YOLO, this depth map for fusion. process() throttles
+        // itself to the camera rate, so most frames return nil here and the cue is left untouched.
+        guard visionEnabled else { return }
+        let result = personDetector.process(
+            image: frame.capturedImage, depth: depth, orientation: Self.cameraOrientation,
+            now: frame.timestamp, throttleInterval: Self.visionThrottle, config: .demo)
+        if let result {
+            Task { @MainActor in self.applyVision(result) }
+        }
+    }
+
+    /// Push the gated person cue and the overlay boxes to the main actor. `.hold` leaves the cue
+    /// exactly as the last tick set it.
+    @MainActor private func applyVision(_ result: PersonFrameResult) {
+        switch result.action {
+        case .report(let side, let distance):
+            visionSink?.report(kind: .person, side: side, distanceMeters: distance)
+        case .clear:
+            visionSink?.clear()
+        case .hold:
+            break
+        }
+        detectionStore?.update(result.overlay)
+
+        // Early-warning pass: the same boxes, watched across frames for constant bearing plus looming.
+        // Diagnostics only here; the flags surface in the demo console and touch no cue. boxHeight is
+        // the looming signal, horizontalNorm the bearing.
+        bearingFrameIndex += 1
+        let observations = result.overlay.map {
+            BoxObservation(label: $0.label, confidence: $0.confidence,
+                           horizontalNorm: Double($0.box.midX), boxHeight: Double($0.box.height))
+        }
+        let flags = bearingTracker.update(observations: observations,
+                                          yawRateRadPerSecond: latestYawRate,
+                                          frameIndex: bearingFrameIndex)
+        interferenceStore?.update(flags)
     }
 
     nonisolated func session(_ session: ARSession, didFailWithError error: Error) {
@@ -114,6 +218,16 @@ extension DepthService: ARSessionDelegate {
         }
         return BandDepths(left: meters(smallest[0]), center: meters(smallest[1]), right: meters(smallest[2]))
     }
+
+    /// A downscaled, upright CGImage from the AR frame's RGB buffer for the demo preview. Oriented
+    /// the same way as the detector so the overlay boxes line up. Nil if the buffer is empty.
+    nonisolated static func previewImage(from pixelBuffer: CVPixelBuffer, context: CIContext) -> CGImage? {
+        let oriented = CIImage(cvPixelBuffer: pixelBuffer).oriented(cameraOrientation)
+        guard oriented.extent.width > 0 else { return nil }
+        let scale = 480.0 / oriented.extent.width
+        let scaled = oriented.transformed(by: CGAffineTransform(scaleX: scale, y: scale))
+        return context.createCGImage(scaled, from: scaled.extent)
+    }
 }
 
 extension DepthService: HazardSource {
@@ -125,25 +239,15 @@ extension DepthService: HazardSource {
                            threshold: thresholdMeters, near: CitrusSquadConfig.dangerNearMeters)
     }
 
-    /// Pure band-to-mask mapping per the `docs/12` table. The closest band within threshold wins;
-    /// inside `near` it escalates a side band to its Far servo. Static and pure so it is unit tested.
+    /// Pure proximity mapping. Any obstacle within threshold across the three sampled bands warns on
+    /// the Back motor; how close it is rides on the intensity, not the motor. Static and pure so it
+    /// is unit tested. (`near` is kept for call-site stability and future grading.)
     nonisolated static func hazard(left: Double, center: Double, right: Double,
                                    threshold: Double, near: Double) -> Hazard? {
-        var best: (mask: QuadrantMask, distance: Double)?
-
-        func consider(_ distance: Double, inner: QuadrantMask, outer: QuadrantMask) {
-            guard distance > 0, distance <= threshold else { return }
-            let mask = distance <= near ? outer : inner
-            if best == nil || distance < best!.distance {
-                best = (mask, distance)
-            }
-        }
-
-        consider(left, inner: .left, outer: .farLeft)
-        consider(center, inner: .centerMass, outer: .centerMass)
-        consider(right, inner: .right, outer: .farRight)
-
-        guard let best else { return nil }
-        return Hazard(kind: .obstacle, mask: best.mask, distanceMeters: best.distance)
+        let nearest = [left, center, right]
+            .filter { $0 > 0 && $0 <= threshold }
+            .min()
+        guard let distance = nearest else { return nil }
+        return Hazard(kind: .obstacle, mask: .back, distanceMeters: distance)
     }
 }
