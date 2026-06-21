@@ -431,12 +431,7 @@ The problem is vocabulary, not accuracy. YOLOv8n finds COCO movers (person, car,
 
 ### Recommendation
 
-Don't retrain or swap models during the hack window.
-
-- Keep YOLOv8n on-device for COCO movers fused with LiDAR. It's proven and compiling.
-- Cover the street-infrastructure gap with Claude Vision as planned.
-- If there's a spare hour, prototype YOLO-World with a fixed street vocabulary (see "YOLO-World pipeline" below), but hard-timebox the CoreML export and keep v8n as the fallback.
-- Post-hackathon: commit to Mapillary Vistas as the on-device replacement for Claude. It's the only pretrained source whose vocabulary matches the blind-navigation domain.
+**Updated 2026-06-20.** YOLO-World is now implemented on `cole/computer-vision` — this is no longer a timebox experiment. The export is done, the Swift wiring is done, and the fallback to v8n is automatic. What remains is getting it onto the demo branch and through the thermal gate. See the implementation status section below.
 
 ### Summary table
 
@@ -453,81 +448,112 @@ Don't retrain or swap models during the hack window.
 | Claude Vision (Haiku 4.5) | VLM identify | Unlimited by description | Network only | ~300-500ms + TTS | Yes | Best gap-filler now |
 | Apple Vision built-in | Detect/classify | Animals only (cats/dogs) | Yes, native | Fast | No | Not useful here |
 
-## YOLO-World implementation pipeline
+## YOLO-World implementation status
 
-Documented here for the team if the timebox experiment gets greenlit.
+Built and pushed on `cole/computer-vision` (commit `30a5fba`, 2026-06-20).
 
-### The key thing to understand
+### What's done
 
-"Open vocabulary" applies at export time, not at inference time. Once you call `set_classes()` and export, the text encoder is gone. On the phone you're running a wider closed-vocab detector, not a live NLP system. That's what keeps it fast enough to consider.
+**Export.** `yolov8s-worldv2.mlpackage` exported on Python 3.11 with ultralytics 8.4.72 and coremltools 9.0. The export must run on Python 3.11 — Python 3.14 throws `BlobWriter not loaded` (a known coremltools incompatibility). SSL certificate errors during download are worked around with `ssl._create_default_https_context = ssl._create_unverified_context` before the import.
 
-### Step 1 — Python export (one-time, replaces the current v8n export)
+The exported model is a CoreML pipeline (two steps: `mlProgram` + `nonMaximumSuppression`) with `confidence` and `coordinates` multiarray outputs. Vision reads these and returns `VNRecognizedObjectObservation`, same as v8n. The NMS step embeds 80 class labels: the first 20 are the navigation vocabulary, slots 21-80 are numbered ("20", "21", …) as padding from the fixed-size output tensor. The `visionNavigationClasses` filter in Swift drops the numbered slots.
 
-```python
+**Navigation vocabulary (frozen at export — changing it requires a re-export):**
+```
+person, bicycle, car, motorcycle, bus, truck, dog, cat,
+pole, bollard, trash can, garbage bin, parking meter, street light,
+fire hydrant, traffic cone, construction barrier, bench, stop sign, traffic light
+```
+
+**Swift wiring.** Three changes from the v8n baseline:
+
+- `CitrusSquadConfig` — new constants: `visionModelName = "yolov8s-worldv2"`, `visionFallbackModelName = "yolov8n"`, `visionThrottleDivisor = 3` (~3.3 Hz vs v8n's 5 Hz, accounting for the heavier model), and `visionNavigationClasses` as the single source of truth for the frozen vocabulary.
+- `ObjectDetectionService.loadModel()` — tries `visionModelName` first (both `.mlmodelc` and `.mlpackage` extensions), falls back to `visionFallbackModelName`. Logs which one loaded. Silent on failure — safe, belt runs on LiDAR.
+- `ObjectDetectionService.runDetection()` — filters against `CitrusSquadConfig.visionNavigationClasses` instead of the old hardcoded COCO set.
+
+**Model files.** Both `.mlpackage`s live in `ios/Sources/Resources/` (gitignored). `ios/Sources/Resources/.gitkeep` has the exact regeneration commands. XcodeGen picks up the directory automatically from `sources: path: Sources` — no manual `Project.yml` edits needed.
+
+### What's needed to run it
+
+**1. Get Cole's files onto the demo branch (Sam).**
+
+The demo branch (`sam/ios-app-base`) runs `PersonDetector`, not `ObjectDetectionService`. `cole/computer-vision` has `ObjectDetectionService`, `MotionTracker`, `MotionParameters`, `CollisionPredictor`, and the new `CitrusSquadConfig` constants. The committed path is in `ios/PERCEPTION-AVOIDANCE-HANDOFF.md` Part B: bring those four Perception files onto the demo branch and make `ObjectDetectionService` the one detector. Keep `PersonDetector`'s time-based gate logic as the reference for reconciling the hysteresis.
+
+**2. Regenerate the model files locally (Sam, one-time).**
+
+Models are gitignored. On the demo branch after the merge, run the commands from `.gitkeep`:
+
+```bash
+# from repo root, using Python 3.11
+python3.11 -c "
+import ssl; ssl._create_default_https_context = ssl._create_unverified_context
 from ultralytics import YOLOWorld
-
-model = YOLOWorld('yolov8s-worldv2.pt')  # smallest available — no nano variant exists
-
-# Bakes embeddings into weights; text encoder is gone after this
-model.set_classes([
-    "person", "bicycle", "car", "motorcycle", "bus", "truck",
-    "dog", "cat",
-    "pole", "bollard", "trash can", "garbage bin",
-    "parking meter", "street light", "fire hydrant",
-    "traffic cone", "construction barrier", "newspaper box",
-    "bench", "stop sign", "traffic light", "crosswalk",
-])
-
+model = YOLOWorld('yolov8s-worldv2.pt')
+model.set_classes(['person','bicycle','car','motorcycle','bus','truck','dog','cat',
+  'pole','bollard','trash can','garbage bin','parking meter','street light',
+  'fire hydrant','traffic cone','construction barrier','bench','stop sign','traffic light'])
 model.export(format='coreml', nms=True)
-# outputs yolov8s-worldv2.mlpackage
+"
+mv yolov8s-worldv2.mlpackage ios/Sources/Resources/
+
+# fallback v8n
+python3.11 -c "from ultralytics import YOLO; YOLO('yolov8n.pt').export(format='coreml', nms=True)"
+mv yolov8n.mlpackage ios/Sources/Resources/
 ```
 
-### Step 2 — Xcode (identical to v8n)
+**3. Regenerate the Xcode project (Sam).**
 
-Drag `yolov8s-worldv2.mlpackage` into the Sources group, check "Add to target: CitrusSquad." No other Xcode changes.
-
-### Step 3 — Swift (one constant changes)
-
-```swift
-// ObjectDetectionService.swift — only navigationClasses changes
-private let navigationClasses: Set<String> = [
-    "person", "bicycle", "car", "motorcycle", "bus", "truck",
-    "dog", "cat",
-    "pole", "bollard", "trash can", "garbage bin",
-    "parking meter", "street light", "fire hydrant",
-    "traffic cone", "construction barrier", "bench",
-    "stop sign", "traffic light",
-]
+```bash
+cd ios && xcodegen generate
 ```
 
-`VNCoreMLRequest` → `VNRecognizedObjectObservation` path stays identical. `MotionTracker`, `CollisionPredictor`, band fusion — untouched.
+XcodeGen scans `Sources/` and picks up both `.mlpackage` directories as CoreML resources automatically. No manual Xcode drag needed.
 
-### Friction points
+**4. Run the thermal soak (Sam, before trusting the world model).**
 
-**Model size.** No YOLO-World-nano. Smallest is "small" (~12M params vs v8n's 3M). Test whether it stays within thermal headroom at 5 Hz or needs to drop to 2-3 Hz. The thermal soak isn't run yet, so this is unknown.
+The world model is ~4x heavier than v8n (~12M vs 3M parameters). The soak procedure is in `docs/12` §6. Run it first on v8n to get a baseline, then with the world model at `visionThrottleDivisor = 3` (~3.3 Hz). If it can't hold out of `.serious` thermal state at 3 Hz, raise the divisor to 4 or 5 and retest. If it can't hold at any safe Hz, keep the world model as the scout-mode-only tool and run v8n live.
 
-**CoreML export reliability.** RepVL-PAN is less battle-tested than vanilla v8 for CoreML. `nms=True` is still required. If it fails you get raw tensors and zero detections — same failure mode as forgetting `nms=True` on v8n. Do a test export on the Mac before committing to this path.
+**5. Confirm orientation calibration (Sam, on-device).**
 
-**Class name sensitivity.** YOLO-World learned text embeddings, so `"trash can"` and `"trashcan"` may behave differently. Test synonyms against `cv/webcam_test.py` and pick whichever hits.
+`ObjectDetectionService.runDetection` passes `.right` orientation to `VNImageRequestHandler`. Verify this is correct for the chest-mount angle: walk toward something on the left, confirm the belt fires left and `depth.left` drops. One bench test closes this.
 
-**Frozen vocabulary.** Can't add a class mid-demo. To change the set, re-run `set_classes()` and re-export.
+**6. Complete Parts B–D from `ios/PERCEPTION-AVOIDANCE-HANDOFF.md` (Sam).**
 
-### Time estimate
+The YOLO-World swap is Part A of the full end-to-end pipeline. Parts B–D bring the motion/collision layers, the `PerceptionSnapshot` AI context object, and the Claude avoidance advisor. The belt story is whole at Part B; D1/D2 are the pitch's wow layer.
 
-Clean export: ~1 hour (export, drag into Xcode, update the constant, webcam test). Fiddly CoreML export: 2-3 hours. That's the timebox. If the export doesn't cooperate, fall back to v8n + Claude Vision.
+### Vocabulary is frozen — changing it requires a re-export
+
+The class list is baked into the model weights at `set_classes()` time. If a class is missing from the demo environment, update the list in `CitrusSquadConfig.visionNavigationClasses` (the Swift filter) **and** re-run the export with the same updated list. Both must stay in sync or the filter drops valid detections.
+
+### Fallback is automatic
+
+If `yolov8s-worldv2.mlpackage` is not in the bundle, `ObjectDetectionService` loads `yolov8n.mlpackage` silently. The belt and LiDAR path never go dark. The only difference is narrower vocabulary (COCO 80 vs the navigation set) and faster inference.
 
 ## Open items
 
+### Cole's lane (done)
 - [x] Implement `ObjectDetectionService.swift` (CoreML + ARKit frame subscription via `DepthService.onFrame`)
 - [x] Implement `CollisionPredictor.swift` — pure threat/action logic; motion-aware `assess(tracked:bands:)` overload
 - [x] Implement `MotionParameters.swift` — parameter library for motion classification
 - [x] Implement `MotionTracker.swift` — cross-frame object tracker, approach velocity, settle filter
 - [x] Wire `ObjectDetectionService` into `AppModel` (`objectDetection.start(depthService:hazard:)` in `init`)
-- [ ] Export `yolov8n.mlpackage` and add to Xcode target (one-time: `python3 -c "from ultralytics import YOLO; YOLO('yolov8n.pt').export(format='coreml', nms=True)"`, drag into Sources group, check "Add to target")
-- [ ] Build `SceneCache.swift` — keyed object label cache by LiDAR band + approximate distance
-- [ ] Build `ClaudeVisionIdentifier.swift` — crops frame at hazard band, calls Haiku 4.5, writes to cache
-- [ ] Wire Claude identification into `AppModel` tick loop — cache check first, Claude call on miss
-- [ ] Scout the demo route with the app to pre-populate the cache before judging
-- [ ] Confirm ARKit depth map x-axis = left/right in portrait mount. Walk toward something on the left, verify `depth.left` drops and belt fires left.
-- [ ] Tune `MotionParameters` thresholds on real footage — `approachThresholdMetersPerSecond` and `matchRadiusNorm` are the most likely to need adjustment
-- [ ] Confirm `VNRecognizedObjectObservation` output from the CoreML model — requires NMS export. If nothing is detected, re-export with `nms=True`
+- [x] Export `yolov8s-worldv2.mlpackage` with 20-class navigation vocabulary (`python3.11`, `nms=True`, validated as pipeline). Both models in `ios/Sources/Resources/` with regeneration commands in `.gitkeep`.
+- [x] Update `CitrusSquadConfig` — `visionModelName`, `visionFallbackModelName`, `visionThrottleDivisor`, `visionNavigationClasses`
+- [x] Update `ObjectDetectionService` — model loading with fallback, config-driven throttle and vocabulary filter
+
+### To activate YOLO-World on the demo branch (Sam)
+- [ ] Merge `ObjectDetectionService`, `MotionTracker`, `MotionParameters`, `CollisionPredictor`, and the new `CitrusSquadConfig` vision constants from `cole/computer-vision` onto `sam/ios-app-base` (Part B of `ios/PERCEPTION-AVOIDANCE-HANDOFF.md`). Reconcile the gate: port `PersonDetector`'s time-based hysteresis into `ObjectDetectionService`'s settle path.
+- [ ] Regenerate model files locally on the demo branch (`python3.11`, commands in `ios/Sources/Resources/.gitkeep`) and run `xcodegen generate`
+- [ ] Run thermal soak on v8n first (procedure in `docs/12` §6), then again with world model at `visionThrottleDivisor = 3`. If world model runs hot, raise divisor or keep it as scout-mode-only.
+- [ ] Confirm `.right` orientation calibration on-device — walk toward something on the left, verify `depth.left` drops and belt fires left
+
+### Claude avoidance layer (Parts C + D, Sam + Josh)
+- [ ] Build `PerceptionSnapshot.swift` — structured scene value (three bands, labels, motion, route) with XML serialization for Claude. Spec in `ios/PERCEPTION-AVOIDANCE-HANDOFF.md` Part C.
+- [ ] Build `AvoidanceAdvisor.swift` — threat → snapshot → Claude draft+verify → `AudioCueSink`. Fire-and-forget, never on the belt path. Part D1.
+- [ ] Build `SceneCache.swift` — loosely-keyed label/avoidance cache (band + approximate distance + label). Pre-warm on the scout pass.
+- [ ] Wire `VoiceCommand.describe_surroundings()` to read `PerceptionSnapshot`. Part D2 (pull path).
+- [ ] Scout the demo route to pre-populate `SceneCache` before judging
+
+### Tuning (on real footage)
+- [ ] Tune `MotionParameters` thresholds — `approachThresholdMetersPerSecond` and `matchRadiusNorm` most likely to need adjustment
+- [ ] Test vocabulary synonyms against `cv/webcam_test.py` — confirm "trash can" vs "trashcan", "pole" vs "signpost" on demo-site footage. Vocabulary is frozen at export; if a synonym works better, re-export.
