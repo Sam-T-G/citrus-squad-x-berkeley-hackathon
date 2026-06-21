@@ -28,6 +28,7 @@ struct ControlPanelView: View {
                 depthCard(obstacleEnabled: $model.obstacleCuesEnabled,
                           earlyWarningEnabled: $model.earlyWarningCuesEnabled)
                 avoidanceCard
+                anchorsCard
                 eventLogCard
                 motionCard
                 soakCard
@@ -49,6 +50,35 @@ struct ControlPanelView: View {
             Text("A band reads its nearest return within threshold. Both sides blocked → stop; one side blocked → steer to the other; else steer to the roomier side.")
                 .font(.caption2)
                 .foregroundStyle(.secondary)
+        }
+    }
+
+    // MARK: - Anchors (last-50-feet detection foundation)
+
+    private var anchorsCard: some View {
+        Card(title: "Anchors (last-50-feet)", status: model.depth.anchorScanning ? .pass : .pending) {
+            HStack {
+                Button(model.anchorScanDiagnostic ? "Stop scan" : "Scan markers") {
+                    model.toggleAnchorScanDiagnostic()
+                }
+                .buttonStyle(.borderedProminent)
+                Spacer()
+                Text(model.depth.anchorScanning ? "scanning" : "off")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+            if model.anchors.sightings.isEmpty {
+                Text(model.anchorScanDiagnostic
+                     ? "No coded marker in view. Start the camera and point it at a printed QR / Aztec / DataMatrix sticker."
+                     : "Decodes printed coded stickers on-device to verify the detection layer.")
+                    .font(.caption2).foregroundStyle(.secondary)
+            } else {
+                ForEach(model.anchors.sightings) { sighting in
+                    LabeledRow(sighting.payload,
+                               sighting.bearing.rawValue + (sighting.distanceMeters.map { String(format: ", %.1f m", $0) } ?? ""))
+                }
+            }
+            Text("Detection foundation for the last-50-feet final approach; the guidance beacon is deferred to blind co-design. See ios/LAST-50-FEET-SCOPING.md.")
+                .font(.caption2).foregroundStyle(.secondary)
         }
     }
 

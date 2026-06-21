@@ -48,6 +48,18 @@ final class DepthService: NSObject {
     /// Gate for the camera tier, toggled off the main actor by the thermal degrade ladder.
     @ObservationIgnored nonisolated(unsafe) var visionEnabled = true
 
+    /// Final-approach anchor scanner (the last-50-feet wedge). Confined to the perception queue, the
+    /// same as `personDetector`. See `Approach/` and `ios/LAST-50-FEET-SCOPING.md`.
+    private let anchorSource: AbsoluteAnchorSource = BarcodeAnchorSource()
+
+    /// Gate for the barcode anchor scan, set from the main actor when an approach starts. Off by
+    /// default, so the scan costs nothing until a final approach is active, and it also rides the
+    /// `visionEnabled` thermal gate, so it sheds under heat with the rest of the camera tier.
+    @ObservationIgnored nonisolated(unsafe) var anchorScanning = false
+
+    /// Where decoded anchor sightings go. Set once by `AppModel.attachVision`.
+    private weak var anchorStore: AnchorStore?
+
     /// Where a resolved person cue and the overlay boxes go. Set once by `AppModel.attachVision`.
     private weak var visionSink: VisionHazardSource?
     private weak var detectionStore: DetectionStore?
@@ -114,12 +126,14 @@ final class DepthService: NSObject {
         session.delegateQueue = perceptionQueue
     }
 
-    /// Wire the person tier to its sink, the demo overlay, and the early-warning surface. Called once
-    /// by `AppModel`.
-    func attachVision(sink: VisionHazardSource, store: DetectionStore, interference: InterferenceStore) {
+    /// Wire the person tier to its sink, the demo overlay, the early-warning surface, and the
+    /// final-approach anchor store. Called once by `AppModel`.
+    func attachVision(sink: VisionHazardSource, store: DetectionStore,
+                      interference: InterferenceStore, anchors: AnchorStore) {
         visionSink = sink
         detectionStore = store
         interferenceStore = interference
+        anchorStore = anchors
     }
 
     func start() {
@@ -139,6 +153,7 @@ final class DepthService: NSObject {
         previewImage = nil
         latestVisionFrame = nil
         sceneDetections = []
+        anchorScanning = false
     }
 
     /// Encode the latest cached frame to JPEG for a Claude vision call. Main-actor and on demand, so
@@ -162,6 +177,17 @@ extension DepthService: ARSessionDelegate {
         guard frameTick % 6 == 0, let depth = frame.sceneDepth?.depthMap else { return }
         let sampled = Self.bandedNearest(in: depth)
         Task { @MainActor in self.bands = sampled }
+
+        // Final-approach anchor scan: a real barcode detection branch on the RGB frame (not the
+        // ~0.3 Hz preview cache). Runs only during an active approach and rides the visionEnabled
+        // thermal gate, so it is free on the common path and sheds under heat with the camera tier.
+        // Distance comes from the LiDAR band the marker sits in, never a vision guess.
+        if visionEnabled, anchorScanning, frameTick % CitrusSquadConfig.anchorScanFrameDivisor == 0 {
+            let sightings = Self.fillAnchorDistances(
+                anchorSource.detect(in: frame.capturedImage, orientation: Self.cameraOrientation),
+                bands: sampled)
+            Task { @MainActor in self.anchorStore?.update(sightings) }
+        }
 
         // Publish a downscaled preview from the same frame so the demo shows the camera, LiDAR, and
         // the detector from one session. Throttled below the band rate; it is cosmetic, so it is the
@@ -265,8 +291,14 @@ extension DepthService: ARSessionDelegate {
         func meters(_ value: Float) -> Double {
             value == .greatestFiniteMagnitude ? -1 : Double(value)
         }
-        // band 0 = scene right, band 2 = scene left. If a live test shows them mirrored, swap these.
-        return BandDepths(left: meters(smallest[2]), center: meters(smallest[1]), right: meters(smallest[0]))
+        // band 0 and band 2 are the scene's two edges; which one is the wearer's left is the one
+        // unverified runtime unknown, so it lives behind a single flag (`lidarBandsMirrored`) with an
+        // on-device verification note, not a buried pair of swapped indices. Default maps band 2 to
+        // left; flip the flag if a live "hard left" test reports the wrong side.
+        let leftIndex = CitrusSquadConfig.lidarBandsMirrored ? 0 : 2
+        let rightIndex = CitrusSquadConfig.lidarBandsMirrored ? 2 : 0
+        return BandDepths(left: meters(smallest[leftIndex]), center: meters(smallest[1]),
+                          right: meters(smallest[rightIndex]))
     }
 
     /// A downscaled, upright CGImage from the AR frame's RGB buffer for the demo preview. Oriented
@@ -277,6 +309,24 @@ extension DepthService: ARSessionDelegate {
         let scale = 480.0 / oriented.extent.width
         let scaled = oriented.transformed(by: CGAffineTransform(scaleX: scale, y: scale))
         return context.createCGImage(scaled, from: scaled.extent)
+    }
+
+    /// Fill each anchor sighting's distance from the LiDAR band it sits in: a coarse but drift-free
+    /// figure, since the marker decode is instantaneous and the depth at its band is ground truth.
+    /// Vision never supplies the distance. The band is chosen by the same horizontal thirds as the
+    /// sighting's bearing, so the two stay internally consistent. This couples the Vision upright frame
+    /// (the centroid) to the mirror-resolved LiDAR bands, which agree on left/right only once both are
+    /// calibrated to the wearer; the on-device "hard left" check must confirm both, not just the LiDAR
+    /// side. Distance stays nil-safe when the chosen band has no return.
+    nonisolated static func fillAnchorDistances(_ sightings: [AnchorSighting],
+                                                bands: BandDepths) -> [AnchorSighting] {
+        sightings.map { sighting in
+            var sighting = sighting
+            let banded = sighting.centroidX < 0.34 ? bands.left
+                : (sighting.centroidX > 0.66 ? bands.right : bands.center)
+            sighting.distanceMeters = banded > 0 ? banded : nil
+            return sighting
+        }
     }
 
     /// An upright, higher-resolution CGImage for the Claude vision read. Same orientation as the

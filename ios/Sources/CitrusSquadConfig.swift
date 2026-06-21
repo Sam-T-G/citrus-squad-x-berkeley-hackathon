@@ -94,6 +94,24 @@ enum CitrusSquadConfig {
     /// and a real read beats a fast "I couldn't see it."
     static let claudeVisionTimeoutSeconds = 5.0
 
+    // LiDAR band orientation (the one runtime unknown in the whole perception port)
+    /// The depth scan reads the scene's left-right along the buffer's rows, and in portrait (`.right`)
+    /// which row-band maps to the wearer's left versus right is unverified on device. `false` keeps the
+    /// current mapping (the far row band reads as the wearer's left). VERIFY ON DEVICE before trusting
+    /// any directional cue: hold a target hard to your left and confirm the left side reports it; if it
+    /// is reversed, set this `true`. A wrong value mirrors every spoken and haptic directional read, so
+    /// it is a blocking calibration, not a tuning knob. Centralized here so it is one flag, not a pair
+    /// of swapped lines buried in `DepthService.bandedNearest`.
+    static let lidarBandsMirrored = false
+
+    // Final-approach anchors (last-50-feet wedge; see ios/LAST-50-FEET-SCOPING.md)
+    /// Cadence divisor for the barcode anchor scan on ARKit's ~60 Hz callback, applied on top of the
+    /// ~10 Hz depth gate, so it must be a multiple of 6. 12 gives ~5 Hz: enough for a warmer/colder
+    /// signal, and it halves how often the barcode pass lands on the same frame as the YOLO pass (the
+    /// YOLO tier runs on every depth frame, so the lever is rate, not phase). Runs only during an active
+    /// approach and sheds with the vision tier under heat.
+    static let anchorScanFrameDivisor = 12
+
     // Obstacle avoidance (LiDAR safety layer, sits above navigation, below the person tier)
     /// Consecutive 10 Hz ticks an obstacle must persist before the avoidance cue activates.
     static let obstacleSettleTicks = 2

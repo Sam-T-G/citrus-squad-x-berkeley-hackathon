@@ -56,6 +56,11 @@ final class AppModel {
     /// heading and looms before LiDAR sees it. Diagnostics only today; the demo console reads it.
     let interference = InterferenceStore()
 
+    /// Final-approach anchors (the last-50-feet wedge). Holds the decoded coded-sticker sightings while
+    /// an approach is active. The guidance that turns a sighting into a beacon is deferred until blind
+    /// co-design (Phase 0); this is the detection foundation. See `ios/LAST-50-FEET-SCOPING.md`.
+    let anchors = AnchorStore()
+
     /// Navigation: software simulation today, live Google Maps when a key is entered.
     let simulator = RouteSimulator()
     var mode: DriveMode = .bench
@@ -121,7 +126,7 @@ final class AppModel {
     init() {
         // The person tier shares the LiDAR ARSession: one frame feeds both depth and YOLO. Wiring
         // the sink here is all it takes; the decide loop already ranks a person over an obstacle.
-        depth.attachVision(sink: vision, store: detections, interference: interference)
+        depth.attachVision(sink: vision, store: detections, interference: interference, anchors: anchors)
         // Start location so heading and GPS are live for navigation and for voice "where am I".
         if location.authorization == .notDetermined { location.requestPermission() }
         location.start()
@@ -772,6 +777,40 @@ final class AppModel {
     - When confidence is low, say the scene is unclear rather than inventing detail.
     """
 
+    // MARK: - Final approach (last-50-feet wedge)
+
+    /// Diagnostics: when on, the anchor scan runs without a target, so the Anchors card shows every
+    /// coded sticker the camera decodes. This is how the detection layer is verified on device before
+    /// the approach flow and the beacon exist.
+    private(set) var anchorScanDiagnostic = false
+
+    /// Start scanning for the printed anchor that labels a destination, e.g. "room-214". Records the
+    /// target so the store can track how steadily it decodes. This is the seam the future, co-designed
+    /// beacon flow will call; it is intentionally not yet wired to any UI or voice surface, because the
+    /// guidance grammar is deferred to Phase 0 blind co-design. See `ios/LAST-50-FEET-SCOPING.md`.
+    func startApproach(to label: String) {
+        anchors.startApproach(to: label)
+        refreshAnchorScanning()
+    }
+
+    /// Stop the approach scan and clear the target.
+    func stopApproach() {
+        anchors.stopApproach()
+        refreshAnchorScanning()
+    }
+
+    /// Toggle the diagnostic "show me every marker" scan. Stale sightings are cleared by the decide
+    /// loop once the scan is no longer active, so this just flips the gate.
+    func toggleAnchorScanDiagnostic() {
+        anchorScanDiagnostic.toggle()
+        refreshAnchorScanning()
+    }
+
+    /// The barcode branch scans when either a real approach or the diagnostic scan is active.
+    private func refreshAnchorScanning() {
+        depth.anchorScanning = anchorScanDiagnostic || anchors.isApproaching
+    }
+
     // MARK: - Decide loop
 
     private func startDecideLoop() {
@@ -786,7 +825,9 @@ final class AppModel {
 
     private func tick() {
         // Thermal degrade ladder (docs/12 §6): at .serious, drop the camera tier and lean on LiDAR.
-        // Reads the live system state, which moves even when no soak is recording.
+        // Reads the live system state, which moves even when no soak is recording. This one gate sheds
+        // both the YOLO person tier and the final-approach anchor scan (both check `visionEnabled`), so
+        // under heat the app falls back to the deterministic LiDAR reflex with no camera load.
         depth.visionEnabled = ProcessInfo.processInfo.thermalState.rawValue < ProcessInfo.ThermalState.serious.rawValue
 
         // Hand the early-warning tracker the live turn rate so it can tell a centered obstacle from
@@ -794,6 +835,14 @@ final class AppModel {
         // flags so a stale heads-up cannot stick after detection stops.
         depth.latestYawRate = motion.yawRateRadPerSecond
         if !depth.visionEnabled { interference.clear() }
+
+        // The anchor scan rides the same thermal gate. When it is shed (heat) or inactive, the delegate
+        // stops calling AnchorStore.update, so clear any held sighting here, or a lost marker would
+        // freeze on its last value and read as steady progress. While scanning, the delegate self-clears
+        // each frame, so this never fights a live read.
+        if !(depth.visionEnabled && depth.anchorScanning), !anchors.sightings.isEmpty {
+            anchors.update([])
+        }
 
         // Priority stack, highest first: a person in the path (camera) preempts everything; then the
         // LiDAR obstacle-avoidance layer steers around what is ahead; then the pre-LiDAR early-warning
