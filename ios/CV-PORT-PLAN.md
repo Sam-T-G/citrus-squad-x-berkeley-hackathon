@@ -24,10 +24,14 @@ thermal gate in `tick`. Both sit in the working tree but are not committed yet, 
 is being co-edited by the Maps integration and I did not want to commit half of that work. They
 activate the tier; until they land it is wired but dormant.
 
+**P0 model — done.** `ios/Sources/Resources/yolov8n.mlpackage` (commit `89103b9`), exported from
+ultralytics 8.4 with `nms=True`. Validated: it is an NMS pipeline (mlProgram detector +
+`nonMaximumSuppression`), class 0 is `person` across the 80 COCO labels, and Xcode compiles it to
+`yolov8n.mlmodelc` in the app bundle, which is what `PersonDetector` loads. So Vision returns
+`VNRecognizedObjectObservation` and the `identifier == "person"` filter is correct.
+
 Remaining, all needing the phone:
 
-- **P0 model:** Cole's `yolov8n.mlpackage` export, dropped into `ios/Sources/Resources/`. Until then
-  `PersonDetector` logs "model not bundled" and the tier stays dark by design.
 - **Orientation calibration:** confirm `PersonDetector.toNativeNormalized`'s `.right` case with a
   left/right target. This is the one runtime unknown; everything numeric is tested.
 - **On-device build + run:** no iOS simulator is installed here, so the device build and the live
