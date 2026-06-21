@@ -18,14 +18,21 @@ final class AudioCueSink: CueSink {
     /// Turn narration on or off without unregistering it.
     var isEnabled = true
 
-    /// Set by the app each tick. True while the Deepgram agent is listening, thinking, or speaking, so
-    /// routine narration defers to it; an urgent (very close) hazard ignores this and speaks anyway.
+    /// Set by the app each tick. True while the Deepgram agent has a turn open (listening, thinking, or
+    /// speaking), so routine narration defers to it; an imminent hazard speaks through.
     var voiceActive = false
+    /// Set by the app each tick. True only while the agent's text-to-speech is actually playing. The
+    /// imminent speak-through holds for this narrow window so two synthetic voices never overlap.
+    var agentSpeaking = false
 
     private let synthesizer = AVSpeechSynthesizer()
-    private var lastEvent: LC2Event = .idle
-    private var lastSource: ResolvedCue.Source = .idle
-    private var lastProximity: Proximity = .far
+    // What was last actually SPOKEN, advanced only when a line is spoken (never per tick). Tracking the
+    // spoken state, not the per-tick state, is what stops a suppressed cue from being silently absorbed:
+    // a hazard that could not speak this tick stays "changed"/"escalated" until it actually gets voiced.
+    private var spokenEvent: LC2Event = .idle
+    private var spokenSource: ResolvedCue.Source = .idle
+    private var spokenProximity: Proximity = .far
+    private var spokenImminent = false
     private var lastSpokenAt = Date.distantPast
 
     /// Coarse closeness bands for speech, derived from the cue's distance-graded intensity. Speech says
@@ -39,25 +46,52 @@ final class AudioCueSink: CueSink {
 
     func emit(_ cue: ResolvedCue) {
         let proximity = Self.proximity(forIntensity: cue.intensity)
-        let changed = cue.event != lastEvent || cue.source != lastSource
-        // Re-announce the same hazard only when it has moved into a closer band, so a worsening obstacle
-        // is voiced again without repeating an unchanged one.
-        let escalated = !changed && cue.source == .hazard && proximity.rawValue > lastProximity.rawValue
-        let urgent = proximity == .veryNear && cue.source == .hazard
-        defer { lastEvent = cue.event; lastSource = cue.source; lastProximity = proximity }
+        let isHazard = cue.source == .hazard
+        // Imminent: close enough that the wearer needs to keep hearing about it. Deliberately more
+        // liberal than the "very close" speech band, so a hazard within range is voiced repeatedly.
+        let imminent = isHazard && cue.intensity >= CitrusSquadConfig.narrationImminentIntensity
+        // Measured against what was last SPOKEN, so a cue that could not speak yet is not lost.
+        let changed = cue.event != spokenEvent || cue.source != spokenSource
+        let escalated = !changed && isHazard && proximity.rawValue > spokenProximity.rawValue
 
         guard isEnabled, cue.event != .idle else { return }
-        guard changed || escalated else { return }
-        // Hold routine narration while the agent is talking, unless this is an urgent hazard.
-        guard !voiceActive || urgent else { return }
-        // A fresh cue speaks at once; a re-announced escalation waits out the refractory so a hazard
-        // creeping closer is not voiced every tick.
-        guard changed || Date().timeIntervalSince(lastSpokenAt) >= CitrusSquadConfig.narrationRefractorySeconds else { return }
+
+        // Decide whether this tick speaks. A new cue speaks, but no sooner than a small gap after the
+        // last line so flapping events cannot machine-gun. An imminent hazard re-announces on a short
+        // floor so it never goes silent while close. A non-imminent worsening re-announces on the
+        // slower refractory. Everything else stays quiet.
+        let now = Date()
+        let sinceLast = now.timeIntervalSince(lastSpokenAt)
+        let speak: Bool
+        if changed {
+            speak = sinceLast >= CitrusSquadConfig.narrationMinGapSeconds
+        } else if imminent {
+            speak = sinceLast >= CitrusSquadConfig.narrationImminentRepeatSeconds
+        } else if escalated {
+            speak = sinceLast >= CitrusSquadConfig.narrationRefractorySeconds
+        } else {
+            speak = false
+        }
+        guard speak else { return }
+        // Routine narration defers to a voice turn; an imminent hazard speaks through, but never while
+        // the agent's TTS is actually playing, so two synthetic voices never overlap.
+        guard !voiceActive || (imminent && !agentSpeaking) else { return }
+
+        // A new imminent hazard may cut in over a routine line (the close obstacle matters more); never
+        // cut in over another imminent line or for a routine cue, so nothing machine-guns or chops a
+        // hazard line. Anything that does not cut in waits for the current line to finish, and stays
+        // pending because the spoken state has not advanced.
+        if synthesizer.isSpeaking {
+            guard changed, imminent, !spokenImminent else { return }
+            synthesizer.stopSpeaking(at: .word)
+        }
         guard let phrase = Self.phrase(for: cue, proximity: proximity) else { return }
 
-        lastSpokenAt = Date()
-        // Let a new line cut in rather than queue behind a stale one (an urgent hazard must not wait).
-        if synthesizer.isSpeaking { synthesizer.stopSpeaking(at: .word) }
+        lastSpokenAt = now
+        spokenEvent = cue.event
+        spokenSource = cue.source
+        spokenProximity = proximity
+        spokenImminent = imminent
         let utterance = AVSpeechUtterance(string: phrase)
         utterance.rate = AVSpeechUtteranceDefaultSpeechRate
         synthesizer.speak(utterance)

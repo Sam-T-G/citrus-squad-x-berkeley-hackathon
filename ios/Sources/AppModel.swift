@@ -923,8 +923,10 @@ final class AppModel {
                    dedupKey: "\(decided.event.rawValue)-\(decided.mask.rawValue)-\(decided.source.rawValue)")
         stageToBelt(decided)
         // Let the narration defer to the voice agent when it has the floor, so the two spoken channels
-        // do not collide; an urgent hazard still speaks through (decided inside the sink).
+        // do not collide. An imminent hazard speaks through, but not while the agent's TTS is actually
+        // playing (agentSpeaking), so two synthetic voices never overlap.
         audio.voiceActive = voice.isEngaged
+        audio.agentSpeaking = voice.state == .speaking
         for sink in cueSinks { sink.emit(decided) }
     }
 

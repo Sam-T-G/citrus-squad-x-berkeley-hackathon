@@ -46,8 +46,20 @@ enum CitrusSquadConfig {
     static let intensityFloor: UInt8 = 96
     /// Minimum gap between spoken hazard re-announcements when an obstacle is creeping closer, so the
     /// narration voices a worsening hazard again without repeating every tick. A fresh, changed cue
-    /// always speaks at once and ignores this.
+    /// speaks subject only to the smaller `narrationMinGapSeconds`.
     static let narrationRefractorySeconds = 2.5
+    /// Smallest gap between any two spoken lines, so a flapping cue (two hazards alternating, a flicker)
+    /// cannot machine-gun the narration. Below this, a changed cue waits.
+    static let narrationMinGapSeconds = 0.6
+    /// Graded cue intensity at or above which a hazard counts as imminent and the narration repeats
+    /// liberally, instead of falling silent after one line. 170 maps to roughly within ~1.2 m via
+    /// `ResolvedCue.intensity(forDistance:)`, so an obstacle that close keeps getting voiced with real
+    /// lead time, not just one within arm's reach.
+    static let narrationImminentIntensity: UInt8 = 170
+    /// Floor on how often an imminent obstruction re-announces. The narrator also waits for the previous
+    /// line to finish before repeating, so the real cadence is the longer of this and the utterance
+    /// length; this is a lower bound, not a hard cadence, and it never cuts a line off mid-word.
+    static let narrationImminentRepeatSeconds = 1.5
 
     // Vision person-in-path tier (docs/12 §6, mirrors the cv/ Python defaults)
     /// YOLO person-detection confidence floor. Cole's `cv/` default; err low, a missed person is
