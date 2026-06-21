@@ -19,6 +19,7 @@ NAVIGATION_CLASSES: frozenset[str] = frozenset(
         "stop sign",
         "traffic light",
         "fire hydrant",
+        "parking meter",
         "bench",
         "potted plant",
         "dog",
