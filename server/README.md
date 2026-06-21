@@ -75,6 +75,29 @@ Put the laptop and phone on the same network (laptop hotspot or a travel router 
 
 The WebSocket endpoint (`ws://<laptop-ip>:8080/belt`) stays available for the stand-in test client and browser debugging, but the phone itself uses UDP.
 
+## Internet fallback (relay)
+
+The local UDP link above is the primary path: ~1 ms latency, no cloud. If a venue makes a shared network impossible, the phone can instead send cues to a hosted relay over WebSocket (port 443, which networks almost never block), and the laptop pulls them down. This is the last resort, not the default; it adds an internet round-trip to the cue path.
+
+```
+phone --WSS /send--> relay.py (hosted) --WSS /recv--> relay_client.py --USB--> Arduino
+```
+
+- **`relay.py`** is the forwarder. It keeps no state and runs no serial; it just passes each 4-byte LC2 frame from a sender to every receiver. Host it anywhere that terminates WSS on 443. A `Dockerfile.relay` and `fly.toml` are here for Fly.io (`cd server && fly launch --no-deploy && fly deploy`).
+- **`relay_client.py`** runs on the laptop next to the Arduino. It reuses the same `Hub` as `app.py`, so the mapping, change-only writes, silence watchdog, and serial reconnect are identical; only the frame source differs.
+
+Test the whole relay path locally first (no cloud, no Arduino):
+
+```sh
+PORT=8090 python relay.py &                                              # the forwarder
+SERIAL_PORT=mock RELAY_URL=ws://localhost:8090/recv python relay_client.py &   # the laptop side
+# then point a sender (or the phone, in Cloud mode) at ws://localhost:8090/send
+```
+
+Optional shared secret: set `RELAY_TOKEN` on the relay and pass the same to `relay_client.py` (and the phone) so a stray client cannot drive the belt.
+
+On the phone, this is the **Cloud** belt transport (Control Panel); **Local (UDP)** stays the default so the original plan is one toggle away.
+
 ## Wire format
 
 - **In (WebSocket):** the 4 raw LC2 bytes per frame, `event, mask, intensity, seq`, exactly what the phone already builds. A JSON text frame `{"event":33,"mask":4,"intensity":192,"seq":0}` also works, for debugging.
