@@ -16,7 +16,8 @@ struct ControlPanelView: View {
         ScrollView {
             VStack(spacing: 16) {
                 header
-                linkCard(host: $model.espHost, port: $model.espPort)
+                linkCard(host: $model.espHost, port: $model.espPort,
+                         useCloud: $model.beltUseCloud, relayURL: $model.relayURL)
                 navigationCard(apiKey: $model.directionsAPIKey,
                                origin: $model.originText,
                                destination: $model.destinationText,
@@ -121,19 +122,35 @@ struct ControlPanelView: View {
 
     // MARK: - Link
 
-    private func linkCard(host: Binding<String>, port: Binding<UInt16>) -> some View {
-        Card(title: "Belt link (LC2 / UDP)", status: linkStatus) {
-            HStack {
-                TextField("Belt host (laptop or ESP32)", text: host)
+    private func linkCard(host: Binding<String>, port: Binding<UInt16>,
+                          useCloud: Binding<Bool>, relayURL: Binding<String>) -> some View {
+        Card(title: "Belt link (LC2)", status: linkStatus) {
+            Picker("Transport", selection: useCloud) {
+                Text("Local (UDP)").tag(false)
+                Text("Cloud (relay)").tag(true)
+            }
+            .pickerStyle(.segmented)
+            .disabled(model.transmitting)
+
+            if useCloud.wrappedValue {
+                TextField("Relay URL (wss://.../send)", text: relayURL)
                     .textFieldStyle(.roundedBorder)
                     .autocorrectionDisabled()
                     .textInputAutocapitalization(.never)
                     .disabled(model.transmitting)
-                TextField("port", value: port, format: .number.grouping(.never))
-                    .textFieldStyle(.roundedBorder)
-                    .frame(width: 80)
-                    .keyboardType(.numberPad)
-                    .disabled(model.transmitting)
+            } else {
+                HStack {
+                    TextField("Belt host (laptop or ESP32)", text: host)
+                        .textFieldStyle(.roundedBorder)
+                        .autocorrectionDisabled()
+                        .textInputAutocapitalization(.never)
+                        .disabled(model.transmitting)
+                    TextField("port", value: port, format: .number.grouping(.never))
+                        .textFieldStyle(.roundedBorder)
+                        .frame(width: 80)
+                        .keyboardType(.numberPad)
+                        .disabled(model.transmitting)
+                }
             }
             LabeledRow("State", model.link.connectionState)
             LabeledRow("Packets sent", "\(model.link.packetsSent)")

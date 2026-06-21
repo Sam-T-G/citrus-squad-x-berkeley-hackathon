@@ -33,6 +33,10 @@ final class AppModel {
     /// Where the ESP32 is listening. Editable from the control panel.
     var espHost: String = "192.168.4.1"
     var espPort: UInt16 = 9999
+    /// Belt transport: false = local UDP (the default, original plan), true = hosted WS relay
+    /// (the internet fallback). `relayURL` is the phone's `/send` role on the deployed relay.
+    var beltUseCloud = false
+    var relayURL = WebSocketBeltTransport.defaultRelayURL
 
     /// Provisional. When on, an active LiDAR obstacle takes priority over the route cue for that
     /// heartbeat. Toggle it off to test pure route cues. See `docs/03-protocol.md` obstacle tier.
@@ -84,7 +88,7 @@ final class AppModel {
     private(set) var link = LinkReport(connectionState: "down", packetsSent: 0, lastEvent: "—")
     private(set) var transmitting = false
 
-    private var transmitter: LC2Transmitter?
+    private var transmitter: (any BeltTransport)?
     private var loop: Task<Void, Never>?
     private let log = Logger(subsystem: "com.samuelgerungan.CitrusSquad", category: "app")
 
@@ -149,13 +153,17 @@ final class AppModel {
 
     func startLink() {
         guard !transmitting else { return }
-        let tx = LC2Transmitter(host: espHost, port: espPort) { [weak self] report in
+        let report: @Sendable (LinkReport) -> Void = { [weak self] report in
             Task { @MainActor in self?.link = report }
         }
+        let tx: any BeltTransport = beltUseCloud
+            ? WebSocketBeltTransport(urlString: relayURL, report: report)
+            : LC2Transmitter(host: espHost, port: espPort, report: report)
         transmitter = tx
         Task { await tx.start() }
         transmitting = true
-        log.info("link started to \(self.espHost, privacy: .public):\(self.espPort)")
+        let dest = beltUseCloud ? relayURL : "\(espHost):\(espPort)"
+        log.info("link started to \(dest, privacy: .public)")
     }
 
     func stopLink() {
