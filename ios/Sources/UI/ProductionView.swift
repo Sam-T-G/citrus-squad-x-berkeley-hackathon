@@ -18,6 +18,12 @@ struct ProductionView: View {
             controls
         }
         .padding()
+        .background {
+            // Hardware volume buttons trigger a voice turn, so the wearer can talk by feel.
+            VolumeButtonTriggerView { Task { await model.voice.toggle() } }
+                .frame(width: 1, height: 1)
+                .allowsHitTesting(false)
+        }
         .overlay {
             Color.green
                 .opacity(flash ? 0.4 : 0)
