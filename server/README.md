@@ -19,15 +19,23 @@ python3 -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
 ```
 
-## Run
+## Run (one command)
+
+```sh
+python run.py            # add --mock to force mock mode (no Arduino)
+```
+
+`run.py` does the whole bring-up: it finds this laptop's Wi-Fi IP and prints exactly what to type on the phone, detects the Arduino (or falls back to mock), warns if the macOS firewall is on, launches the server, and shows a live monitor that announces the moment the phone connects and the first cue reaches the belt. Ctrl-C stops it. This is the fastest path to a working link.
+
+To run the server by itself instead:
 
 ```sh
 python app.py            # or: uvicorn app:app --host 0.0.0.0 --port 8080
 ```
 
-Open the dashboard at <http://localhost:8080>. It shows the serial state, connected WebSocket clients, and the last frame, and has buttons to fire test cues at the belt.
+Open the dashboard at <http://localhost:8080>. It shows the serial state, connected clients, the last cue source, and the last command, and has buttons to fire test cues at the belt.
 
-If no Arduino is found it prints `MOCK mode` and logs every command instead of writing serial, so the whole WebSocket path is testable on its own.
+If no Arduino is found it prints `MOCK mode` and logs every command instead of writing serial, so the whole path is testable on its own.
 
 ## Flashing the Arduino
 
