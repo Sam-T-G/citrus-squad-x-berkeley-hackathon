@@ -53,11 +53,28 @@ Voice Agent wants a continuous stream and finalizes the turn itself with its own
 detection when the speaker pauses. So the mic streams from start to stop, and the agent answers on a
 pause. `finishTurn` was removed.
 
-**Interaction is tap-to-toggle with audio cues.** Hold-to-talk was replaced. Tap to start (begin-
-record tone, system sound 1113, plus a haptic), speak, then wait; the agent answers on a pause (end-
-record tone, 1114, when it starts processing). Tap again while active to cancel. This is also
-friendlier to VoiceOver than a hold gesture. Labels cycle Tap to talk / Connecting / Listening /
-Thinking / Speaking.
+**Interaction: tap-to-toggle on screen, or press-and-hold a volume button.** Tap the on-screen
+control to start a turn, or press and hold a hardware volume button to start it by feel. Speak, then
+wait; the agent answers on a pause. Trigger again while active to cancel. Labels cycle Tap to talk /
+Connecting / Listening / Thinking / Speaking.
+
+**Hardware trigger (`VolumeButtonTrigger`).** iOS exposes no hook for the side or Action button, so
+the volume buttons are the only physical option. It observes `AVAudioSession.outputVolume` via KVO. A
+held button auto-repeats, so a *burst* of volume changes fires the agent once; a single tap is one
+change and is ignored, which keeps an accidental volume tap from triggering. The press is absorbed:
+system volume is parked back to mid-level through a hidden `MPVolumeView` slider so it never drifts to
+a rail and stops the auto-repeat, and that off-screen view suppresses the volume HUD. Hosted as a
+hidden background on the Operate screen. The auto-repeat timing is OS-specific and tunable
+(`pressesToFire`, `releaseMilliseconds`).
+
+**Audio cues, and why the ready cue is synthesized.** `AudioServicesPlaySystemSound` is a UI sound the
+ringer switch silences and an active record session can mute, so it is unreliable as feedback during a
+voice turn (the agent's TTS reply still plays because it is media, not a UI sound). The ready
+confirmation therefore plays through the media route, like the TTS: `ChimePlayer` synthesizes a soft
+rising C5 -> G5 fifth over a warm low C with a few harmonics, heard at speaker volume even on silent,
+paired with the success haptic. A light haptic ticks when the hold first registers. The cues map to
+state: `voiceActivating` on `connecting`, `voiceReady` (the chime) on `listening`, `voiceProcessing`
+on `thinking`.
 
 **Echo is handled in software.** With a plain audio mode there is no hardware echo cancellation, so
 the agent could transcribe its own voice. An `agentSpeaking` flag mutes the outgoing mic from the
