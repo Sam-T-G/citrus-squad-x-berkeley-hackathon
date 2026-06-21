@@ -106,15 +106,17 @@ Drop `yolov8s-worldv2.mlpackage` into `ios/Sources/Resources/` next to the exist
 `yolov8n.mlpackage`. Reference it in `Project.yml`, run `xcodegen generate`.
 
 ### Swift (Sam)
-`ObjectDetectionService` already loads `yolov8n` by a hardcoded resource name and filters on a
-hardcoded `navigationClasses` set. Two changes:
+On this branch the detector is `PersonDetector`, and the class-filter half is already done (commit
+`3c83f75`): it filters on `CitrusSquadConfig.visionNavigationClasses` (21 COCO classes, in lockstep
+with `cv/detection.py`) and carries the matched label through `PersonDetection` and the overlay. One
+change remains for the world-model swap:
 
 - Load `CitrusSquadConfig.visionModelName` (default `"yolov8s-worldv2"`, fallback `"yolov8n"`) instead
-  of the hardcoded `"yolov8n"` in `loadModel()`.
-- Move `navigationClasses` into `CitrusSquadConfig.visionNavigationClasses` so the Swift filter and
-  the export vocabulary live next to each other and can be checked for drift. The class-name strings
-  must match the export exactly; YOLO-World keys on learned text embeddings, so `"trash can"` and
-  `"trashcan"` are different classes.
+  of the hardcoded `"yolov8n"` in `PersonDetector.loadModelIfNeeded()`.
+
+When the world model lands, swap the COCO names in `visionNavigationClasses` for the export vocabulary.
+The class-name strings must match the export exactly; YOLO-World keys on learned text embeddings, so
+`"trash can"` and `"trashcan"` are different classes.
 
 `runDetection`, the `VNRecognizedObjectObservation` path, the orientation handling, and the fusion
 math all stay identical. The model is a wider closed-vocab detector after export; the Swift sees the

@@ -63,9 +63,12 @@ and leave YOLO-World for post-hack.
 There are two parallel detector implementations and they are not the same shape. The swap doc Cole
 wrote assumes the wrong one for our active branch.
 
-- **`sam/ios-app-base` (production, the demo branch):** `Perception/PersonDetector.swift`. Person
-  only. The class filter is a hardcoded `isPerson(_:)` that checks `top.identifier == "person"`.
-  There is no `navigationClasses` set here.
+- **`sam/ios-app-base` (production, the demo branch):** `Perception/PersonDetector.swift`. **No longer
+  person-only as of commit `3c83f75`.** The hardcoded `isPerson(_:)` is replaced with
+  `navigationLabel(_:)`, a class-set filter against `CitrusSquadConfig.visionNavigationClasses` (21
+  COCO classes, in lockstep with `cv/detection.py`), and `PersonDetection` carries the matched label.
+  This is path A's Swift generalization (step 3 below) already landed against the bundled v8n. What
+  remains for YOLO-World is the heavier model export and the model-selection flag, not the filter.
 - **`cole/computer-vision` (not merged):** `Perception/ObjectDetectionService.swift`. Multi-class,
   with a `navigationClasses: Set<String>` constant, plus `MotionTracker` and `CollisionPredictor`.
 
@@ -108,6 +111,10 @@ both bundled so the flag can pick at launch and the fallback is instant. Referen
 build on the demo phone.
 
 ### Step 3 — Model selection flag + generalized filter (Sam)
+**Status: the filter half is done (commit `3c83f75`).** `CitrusSquadConfig.visionNavigationClasses`
+exists (21 classes, default-on, not gated behind a flag since it costs nothing on v8n), `isPerson` is
+now `navigationLabel`, and `PersonDetection` carries `label`. What is left here is only the
+`visionModelName` selector below, which the world-model swap needs.
 - Add `CitrusSquadConfig.visionModelName` (default `"yolov8n"`) and a
   `visionNavigationClasses: Set<String>` (default `["person"]`, the full nav vocabulary when the
   flag flips). One place to change.

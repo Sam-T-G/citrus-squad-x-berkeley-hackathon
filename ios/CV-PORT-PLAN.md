@@ -82,7 +82,7 @@ struct PersonDetection: Sendable, Equatable {
 }
 ```
 
-Note the deliberate narrowing from Cole's 20 `NAVIGATION_CLASSES` down to **person only**. The base demo's `0x10` is person-in-path. The broader navigation classes are a post-demo richer-haptics idea, not the Saturday target. Keep the class filter in one place so it is a one-line change later.
+**Update (commit `3c83f75`): the narrowing to person-only is undone.** The on-device filter now reads `CitrusSquadConfig.visionNavigationClasses`, the 21-class set held in lockstep with `NAVIGATION_CLASSES` in `cv/detection.py`, and `PersonDetection` carries the real COCO label (`person`, `bicycle`, `bench`, `parking meter`, ...) through the overlay instead of the hardcoded `"person"`. The gate, depth fusion, and intensity math are untouched (they key on distance and side, not class), so the `0x10` cue behaves exactly as before; the win is real labels for the overlay, diagnostics, and the spoken tier. The base demo beat is still person-in-path; the wider set is the richer-haptics layer riding on the same code path. `PersonDetector.navigationLabel` is the one place the filter lives.
 
 ## Pipeline phases
 

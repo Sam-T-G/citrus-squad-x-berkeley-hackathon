@@ -128,8 +128,12 @@ vocabulary is frozen at export time and the class strings are learned text embed
 a contract: it must match `set_classes()` exactly, and a longer list dilutes per-class accuracy and
 costs compute, so it stays curated rather than exhaustive.
 
-The current export vocabulary (on `cole/computer-vision`, `CitrusSquadConfig.visionNavigationClasses`)
-has 20 classes and misses trees outright. Proposed additions, grouped by how they relate to this layer:
+The current vocabulary (`CitrusSquadConfig.visionNavigationClasses`, now on this branch as of commit
+`3c83f75`) has 21 COCO classes and misses street infrastructure outright (no pole, bollard, or tree).
+As of that commit the tracker already reads real per-class labels from the overlay rather than only
+`person`, so it distinguishes object types today; the additions below are the street-infrastructure
+vocabulary the bearing flag wants once an open-vocabulary model (YOLO-World) can name them. Grouped by
+how they relate to this layer:
 
 **Fixed vertical infrastructure (prime early-warning targets).** Thin, stationary, LiDAR-sparse at
 range, and dead ahead is exactly where they hurt. These are the classes the bearing flag should
