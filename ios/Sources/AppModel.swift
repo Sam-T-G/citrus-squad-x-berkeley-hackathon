@@ -896,9 +896,9 @@ final class AppModel {
 
         let decided: ResolvedCue
         if let person {
-            // Guide the wearer to safety: tap the side AWAY from the person so the belt steers them
-            // around the collision, rather than buzzing the side the person is on. A person on the
-            // left taps Right (go right); dead-ahead has no clear escape, so it stays a front alert.
+            // Guide the wearer to safety: tap the direction AWAY from the person so the belt steers
+            // them clear, rather than buzzing the side the person is on. A person on the left taps
+            // Right (go right); a person dead-ahead taps Back (stop and back up), never Front.
             decided = ResolvedCue(event: person.event,
                                   mask: Self.escapeSide(from: person.mask),
                                   intensity: ResolvedCue.intensity(forDistance: person.distanceMeters),
@@ -928,13 +928,14 @@ final class AppModel {
         for sink in cueSinks { sink.emit(decided) }
     }
 
-    /// Turn a person's location into the escape direction: tap the opposite side so the belt steers
-    /// the wearer away from the collision. Left becomes Right and vice versa; a centered person has no
-    /// clear escape, so it stays a front alert. Keeps the belt's job "guide to safety," not "point at
-    /// the hazard."
+    /// Turn a person's location into the escape direction: tap the way AWAY from the collision so the
+    /// belt steers the wearer clear, never toward the person. Left becomes Right and vice versa; a
+    /// person dead-ahead taps Back (stop and back up) instead of Front, so the belt never signals the
+    /// wearer to walk into them. Keeps the belt's job "guide to safety," not "point at the hazard."
     static func escapeSide(from mask: QuadrantMask) -> QuadrantMask {
         if mask.contains(.left), !mask.contains(.right) { return .right }
         if mask.contains(.right), !mask.contains(.left) { return .left }
+        if mask.contains(.front) { return .back }
         return mask
     }
 
