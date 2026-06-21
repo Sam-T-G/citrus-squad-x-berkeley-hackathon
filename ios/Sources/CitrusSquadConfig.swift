@@ -88,4 +88,15 @@ enum CitrusSquadConfig {
     /// Off-path distance past which guidance steers back toward the line (and a reroute belongs).
     /// Reuses the existing reroute deviation budget.
     static let onPathToleranceMeters = rerouteDeviationMeters
+
+    // Heading resolution (live walk). The belt's motors are magnets right next to the phone, so GPS
+    // course over ground is preferred over the magnetometer while moving. See `HeadingResolver`.
+    /// Minimum ground speed (m/s) before GPS course is trusted as the body heading. Normal walking
+    /// stays above this; standing or shuffling drops below it and the compass takes over.
+    static let courseMinSpeedMetersPerSecond = 0.5
+    /// Reject GPS course readings worse than this (degrees). Negative course accuracy is treated as
+    /// "unknown" and the speed gate decides.
+    static let courseMaxAccuracyDegrees = 30.0
+    /// Reject magnetometer readings worse than this (degrees). The belt can push the compass past it.
+    static let headingMaxAccuracyDegrees = 25.0
 }

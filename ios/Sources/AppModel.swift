@@ -93,6 +93,13 @@ final class AppModel {
     private(set) var avoidanceRaw = "clear"
     private(set) var avoidanceFiltered = "clear"
 
+    /// Last body-forward heading the resolver trusted, reused for a tick or two when it briefly returns
+    /// nil (ground speed dipping between steps) so the live cue does not flicker.
+    private var lastBodyHeading: Double?
+    /// Which source drove the live heading last tick (`course` / `compass` / `hold`), for the field
+    /// readout while validating the heading fix.
+    private(set) var headingSource = "—"
+
     private var cueSinks: [CueSink] { [audio] }
 
     init() {
@@ -243,9 +250,10 @@ final class AppModel {
         }
     }
 
-    /// Travel heading for the map camera: the simulated course, or the live compass.
+    /// Travel heading for the map camera: the simulated course, or the resolved live body heading
+    /// (GPS course while moving) so the map and the belt steer off the same direction.
     var navHeading: Double {
-        mode == .simulate ? simulator.heading : location.trueHeading
+        mode == .simulate ? simulator.heading : (lastBodyHeading ?? location.trueHeading)
     }
 
     private var liveGeoPoint: GeoPoint? {
@@ -483,11 +491,28 @@ final class AppModel {
             route.updateRoute(location: point, phoneHeading: heading, applyCalibration: false)
             return route.currentCue
         case .live:
-            // Field walk: follow the route from the real GPS fix and compass.
-            guard let fix = liveGeoPoint, location.trueHeading >= 0 else { return nil }
-            route.updateRoute(location: fix, phoneHeading: location.trueHeading)
+            // Field walk: follow the route from the real GPS fix, steering off the resolved body
+            // heading (GPS course while moving, accuracy-gated compass when stopped). The resolved
+            // value is already body-forward true north, so the calibration offset is bypassed.
+            guard let fix = liveGeoPoint, let heading = resolveLiveHeading() else { return nil }
+            route.updateRoute(location: fix, phoneHeading: heading, applyCalibration: false)
             return route.currentCue
         }
+    }
+
+    /// Body-forward true-north heading for the live walk, from `HeadingResolver`, with a short hold so
+    /// a momentary speed dip between steps does not drop the cue. Returns nil only when there is no
+    /// trustworthy heading and none was held.
+    private func resolveLiveHeading() -> Double? {
+        if let resolved = HeadingResolver.resolve(
+            course: location.course, courseAccuracy: location.courseAccuracy, speed: location.speed,
+            trueHeading: location.trueHeading, headingAccuracy: location.headingAccuracy) {
+            lastBodyHeading = resolved.degrees
+            headingSource = resolved.source.rawValue
+            return resolved.degrees
+        }
+        if lastBodyHeading != nil { headingSource = "hold" }
+        return lastBodyHeading
     }
 
     /// Highest-priority hazard across all sources: a person first, then the nearest obstacle.

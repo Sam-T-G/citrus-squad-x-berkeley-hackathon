@@ -244,6 +244,9 @@ struct ControlPanelView: View {
             LabeledRow("Permission", authText(model.location.authorization))
             LabeledRow("True heading", "\(format(model.location.trueHeading))°")
             LabeledRow("Accuracy", "±\(format(model.location.headingAccuracy))°")
+            LabeledRow("GPS course", model.location.course < 0 ? "—" : "\(format(model.location.course))°")
+            LabeledRow("Speed", model.location.speed < 0 ? "—" : String(format: "%.1f m/s", model.location.speed))
+            LabeledRow("Steering from", model.headingSource)
             if model.location.authorization == .notDetermined {
                 Button("Request location permission") { model.location.requestPermission() }
                     .buttonStyle(.borderedProminent)
