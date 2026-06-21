@@ -57,8 +57,9 @@ Swift. There are zero direct Anthropic API calls in the codebase. An `anthropic`
 
 ## Two things to fix regardless of what we build next
 
-- **Naming drift.** The app says "Claude" in comments and provisions an Anthropic key, yet no Claude
-  model, hosted or direct, runs anywhere. Correct the comments so the next person is not misled.
+- **Naming drift.** *(Done.)* The "Deepgram-managed Claude" comments in `VoiceModel.swift` and
+  `AppModel.swift` now say `gpt-4o-mini` for the think stage, and note that Claude runs only in the
+  on-device draft/verify/vision path. Claude is now actually wired there (see option A/B below).
 - **A live key sits unused in plaintext.** `ios/Local.xcconfig` holds a real, spendable
   `sk-ant-api03-...` key. It is gitignored, so it is not in git, but it does nothing today and is a
   real credential in cleartext. Rotate it, and put real key handling in place (spend-capped, revoked
@@ -176,9 +177,12 @@ Suggested first slice, flag-gated and isolated so it touches no safety code:
 | `Sources/Voice/VoiceCommand.swift` | Built. 11 functions; `read_text` / `locate_entrance` deliberately absent (camera exclusivity). |
 | `Sources/Perception/PersonDetector.swift` | Built. The one neural net (YOLOv8n). |
 | `Sources/Secrets.swift` | Built. Reads the Anthropic key from Info.plist; currently unused. |
-| `Sources/Perception/PerceptionSnapshot.swift` | To add (A). The structured scene the Claude tier reasons over. |
+| `Sources/Perception/PerceptionSnapshot.swift` | **Built (A).** Structured scene (bands + fused hazard + route) with `xmlForClaude()`. Per-band object lists still await the YOLO-World + MotionTracker merge. |
 | `Sources/Perception/SceneCache.swift` | To add (A/D). Loosely-keyed cache for zero-latency demo lines. |
 | `Sources/Perception/AvoidanceAdvisor.swift` | To add (D). Threat to snapshot to verified spoken line. |
-| A Claude client (e.g. `Sources/AI/ClaudeClient.swift`) | To add (A/B/C). `URLSession` to `/v1/messages`; draft + verify + vision. |
+| `Sources/AI/ClaudeClient.swift` | **Built (A/B).** `URLSession` actor to `/v1/messages`: Haiku draft, Sonnet structured-output verify, Opus base64-frame vision. Every failure returns nil so the caller speaks its grounded fallback. |
+| `Sources/Sensors/DepthService.swift` | **Edited (B).** Caches a ~2 Hz higher-res frame from the running ARSession and exposes `grabFrameJPEG()` for the pull-based vision read. |
+| `Sources/AppModel.swift` | **Edited (A/B).** `describe_surroundings` / `check_path` run draft+verify over the snapshot; `read_sign` runs the vision read; both fall back to the existing grounded strings. |
+| `Sources/Voice/VoiceCommand.swift` | **Edited (B).** Added the `read_sign` client-side function. `locate_entrance` still deliberately absent. |
 
 When work lands, update [`../STATUS.md`](../STATUS.md) and move items between planned and built here.

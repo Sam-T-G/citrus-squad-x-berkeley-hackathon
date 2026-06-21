@@ -78,6 +78,13 @@ final class DepthService: NSObject {
     /// rear camera.
     private(set) var previewImage: CGImage?
 
+    /// The latest higher-resolution upright frame, kept for the pull-based Claude vision read ("what's
+    /// around me", "read that sign"). Refreshed at ~2 Hz from the same ARSession, so there is no second
+    /// capture session contending for the rear camera. Nil when depth is not running. The read encodes
+    /// this to JPEG on demand, so most frames cost only the cache, never an encode. See `ClaudeClient`
+    /// and `AI-USAGE-AUDIT-AND-EXPANSION.md`.
+    private(set) var latestVisionFrame: CGImage?
+
     /// CIContext is documented thread-safe for rendering, so the perception queue uses it directly.
     nonisolated(unsafe) private let ciContext = CIContext(options: nil)
 
@@ -124,6 +131,21 @@ final class DepthService: NSObject {
         session.pause()
         isRunning = false
         previewImage = nil
+        latestVisionFrame = nil
+    }
+
+    /// Encode the latest cached frame to JPEG for a Claude vision call. Main-actor and on demand, so
+    /// the encode happens only when the wearer asks, never on the perception queue. Nil when no frame
+    /// is cached (camera off). 1280 px long edge keeps small text legible while bounding tokens.
+    func grabFrameJPEG(quality: Double = 0.7) -> Data? {
+        guard let image = latestVisionFrame else { return nil }
+        let data = NSMutableData()
+        guard let destination = CGImageDestinationCreateWithData(data, "public.jpeg" as CFString, 1, nil)
+        else { return nil }
+        CGImageDestinationAddImage(destination, image,
+                                   [kCGImageDestinationLossyCompressionQuality: quality] as CFDictionary)
+        guard CGImageDestinationFinalize(destination) else { return nil }
+        return data as Data
     }
 }
 
@@ -140,6 +162,13 @@ extension DepthService: ARSessionDelegate {
         if frameTick % 12 == 0, let cg = Self.previewImage(from: frame.capturedImage, context: ciContext) {
             let wrapped = SendableImage(image: cg)
             Task { @MainActor in self.previewImage = wrapped.image }
+        }
+
+        // Keep a higher-resolution frame for the pull-based Claude vision read, slower than the preview
+        // because nothing consumes it until the wearer asks. Same frame, no second camera session.
+        if frameTick % 30 == 0, let cg = Self.visionImage(from: frame.capturedImage, context: ciContext) {
+            let wrapped = SendableImage(image: cg)
+            Task { @MainActor in self.latestVisionFrame = wrapped.image }
         }
 
         // Person tier off the same frame: RGB for YOLO, this depth map for fusion. process() throttles
@@ -236,6 +265,18 @@ extension DepthService: ARSessionDelegate {
         guard oriented.extent.width > 0 else { return nil }
         let scale = 480.0 / oriented.extent.width
         let scaled = oriented.transformed(by: CGAffineTransform(scaleX: scale, y: scale))
+        return context.createCGImage(scaled, from: scaled.extent)
+    }
+
+    /// An upright, higher-resolution CGImage for the Claude vision read. Same orientation as the
+    /// preview and the detector. Scaled so the long edge is at most 1280 px: enough to read a street
+    /// sign or bus number, small enough to keep the request light. Nil if the buffer is empty.
+    nonisolated static func visionImage(from pixelBuffer: CVPixelBuffer, context: CIContext) -> CGImage? {
+        let oriented = CIImage(cvPixelBuffer: pixelBuffer).oriented(cameraOrientation)
+        let longEdge = max(oriented.extent.width, oriented.extent.height)
+        guard longEdge > 0 else { return nil }
+        let scale = min(1.0, 1280.0 / longEdge)
+        let scaled = scale < 1 ? oriented.transformed(by: CGAffineTransform(scaleX: scale, y: scale)) : oriented
         return context.createCGImage(scaled, from: scaled.extent)
     }
 }

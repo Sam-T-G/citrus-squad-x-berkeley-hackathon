@@ -32,8 +32,9 @@ final class VoiceModel {
     private var session: VoiceSession?
     private let log = Logger(subsystem: "com.samuelgerungan.CitrusSquad", category: "voice.model")
 
-    /// Voice needs the Deepgram key to talk. The Anthropic key is only required later for the
-    /// on-device evaluator (V3); until then the think stage runs on Deepgram-managed Claude.
+    /// Voice needs the Deepgram key to talk. The think stage runs on Deepgram-managed `gpt-4o-mini`
+    /// (no key of ours), so the agent connects on the Deepgram key alone. Our Anthropic key powers the
+    /// separate on-device draft-and-verify and vision path, not this socket.
     var isConfigured: Bool { Secrets.deepgramAPIKey != nil }
 
     // MARK: - Control

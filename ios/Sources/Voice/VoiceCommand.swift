@@ -10,13 +10,14 @@ enum VoiceCommand: Sendable, Equatable {
     case whereAmI
     case describeSurroundings
     case checkPath
+    case readSign
     case recalibrate
     case connectBelt
     case disconnectBelt
     case stop
-    /// A function the agent named that we cannot serve right now. The camera tools live here
-    /// because the rear camera is exclusive with the ARKit LiDAR that runs the safety reflex
-    /// (see `CameraService`), so they stay off while the belt is guiding.
+    /// A function the agent named that we cannot serve right now. `locate_entrance` still lives here;
+    /// `read_sign` moved out, because the Claude vision read shares the one ARSession frame and never
+    /// needs a second camera session away from the LiDAR reflex.
     case unavailable(String)
 
     /// Map a Deepgram function name and its decoded string arguments to a command. An unknown name
@@ -37,6 +38,8 @@ enum VoiceCommand: Sendable, Equatable {
             self = .describeSurroundings
         case VoiceFunction.checkPath.name:
             self = .checkPath
+        case VoiceFunction.readSign.name:
+            self = .readSign
         case VoiceFunction.recalibrate.name:
             self = .recalibrate
         case VoiceFunction.connectBelt.name:
@@ -63,6 +66,7 @@ enum VoiceFunction: String, CaseIterable, Sendable {
     case whereAmI
     case describeSurroundings
     case checkPath
+    case readSign
     case recalibrate
     case connectBelt
     case disconnectBelt
@@ -77,6 +81,7 @@ enum VoiceFunction: String, CaseIterable, Sendable {
         case .whereAmI: return "where_am_i"
         case .describeSurroundings: return "describe_surroundings"
         case .checkPath: return "check_path"
+        case .readSign: return "read_sign"
         case .recalibrate: return "recalibrate"
         case .connectBelt: return "connect_belt"
         case .disconnectBelt: return "disconnect_belt"
@@ -93,6 +98,7 @@ enum VoiceFunction: String, CaseIterable, Sendable {
         case .whereAmI: return "Report the wearer's current location as a nearby place or address."
         case .describeSurroundings: return "Describe what is ahead, prioritized for a walker."
         case .checkPath: return "Check whether a person or object is in the wearer's walking path and which side is open. The result already includes the safe direction (the LiDAR-confirmed open side) so you never send the wearer into a blocked side. Use it to warn of a likely collision and tell the wearer to step left, step right, or stop. Call it when the wearer asks if the way is clear, if something is in front of them, or how to get around an obstacle, and lean on it whenever a collision seems likely."
+        case .readSign: return "Read a sign, label, number, or other printed text the wearer points the camera at, and say it back. Call it when the wearer asks you to read something, what a sign says, a store name, a bus number, a street name, or an address. It grabs one camera frame and reads it; it is informational only and never a navigation instruction."
         case .recalibrate: return "Recapture the forward-facing heading offset."
         case .connectBelt: return "Connect to the haptic belt so it can start tapping cues."
         case .disconnectBelt: return "Disconnect from the haptic belt."

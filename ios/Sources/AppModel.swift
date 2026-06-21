@@ -20,8 +20,15 @@ final class AppModel {
     let route = RouteEngine()
     let thermal = ThermalMonitor()
 
-    /// Voice layer (Deepgram Voice Agent + Claude). Off the belt's safety path; see `docs/14`.
+    /// Voice layer: Deepgram Voice Agent for speech, with a Deepgram-managed `gpt-4o-mini` think
+    /// stage. Claude runs separately in the on-device draft-and-verify and vision path (`claude`), not
+    /// inside this socket. Off the belt's safety path; see `docs/14`.
     let voice = VoiceModel()
+
+    /// On-device Claude tier for the spoken layer: draft a line, verify it against the structured
+    /// scene, read a camera frame. Off the safety path, additive only, allowed to be slow or to fail.
+    /// See `AI-USAGE-AUDIT-AND-EXPANSION.md`.
+    let claude = ClaudeClient()
 
     /// Where the ESP32 is listening. Editable from the control panel.
     var espHost: String = "192.168.4.1"
@@ -99,6 +106,15 @@ final class AppModel {
     /// Which source drove the live heading last tick (`course` / `compass` / `hold`), for the field
     /// readout while validating the heading fix.
     private(set) var headingSource = "—"
+
+    /// Walk-to-calibrate state for the compass mount offset. Fed each live tick from GPS course and the
+    /// compass; until it locks, the live walk withholds turn cues so the demo never opens on a
+    /// few-degrees-off heading. See `HeadingCalibrator`.
+    private var calibrator = HeadingCalibrator()
+    /// True once the calibration walk has locked the mount offset; live turn cues wait on it.
+    var isHeadingCalibrated: Bool { calibrator.isLocked }
+    /// 0...1 toward a calibration lock, for the "walk forward" prompt's progress.
+    var calibrationProgress: Double { calibrator.progress }
 
     private var cueSinks: [CueSink] { [audio] }
 
@@ -225,7 +241,14 @@ final class AppModel {
         if location.authorization == .notDetermined { location.requestPermission() }
         location.start()
         simulator.stop()
+        calibrator.reset()   // each walk recalibrates the mount offset from a fresh few steps
         mode = .live
+    }
+
+    /// Restart the heading calibration walk: the wearer takes a few steps and the mount offset relocks.
+    /// Wired to the Calibrate control so that button now does real work for the live walk.
+    func recalibrateHeading() {
+        calibrator.reset()
     }
 
     /// Stop whichever drive is active (simulated or live) and return to the idle bench state.
@@ -273,6 +296,20 @@ final class AppModel {
 
     // MARK: - Voice
 
+    /// Whether the on-device Claude tier has a key, for gating the manual demo buttons in the UI. Sync
+    /// (reads `Secrets`), unlike the actor's async `isConfigured`, so a view can check it directly.
+    var claudeConfigured: Bool { Secrets.anthropicAPIKey != nil }
+
+    /// The last line a manual HUD button produced (read sign / what's around me), shown in the demo so
+    /// the room can see the Claude tier answer without the mic.
+    private(set) var lastDemoLine = ""
+
+    /// Run a spoken command from a manual HUD button and surface its line. Same path the voice agent
+    /// drives, so the demo shows the Claude tier with or without the mic.
+    func runDemoCommand(_ command: VoiceCommand) async {
+        lastDemoLine = await handleVoice(command)
+    }
+
     /// Run a spoken command and return the line the agent should speak. Off the belt's safety path,
     /// so it is allowed to be slow and to fail without affecting navigation or the LiDAR reflex.
     func handleVoice(_ command: VoiceCommand) async -> String {
@@ -282,8 +319,19 @@ final class AppModel {
         case .nextTurn: return spokenNextTurn()
         case .tripSummary: return spokenTripSummary()
         case .whereAmI: return await spokenLocation()
-        case .describeSurroundings: return spokenSurroundings()
-        case .checkPath: return spokenPathCheck()
+        case .describeSurroundings:
+            return await verifiedLine(
+                instruction: "In one short spoken sentence, describe what is ahead for a walker, " +
+                    "prioritizing anything close or in the path.",
+                fallback: spokenSurroundings())
+        case .checkPath:
+            return await verifiedLine(
+                instruction: "In one short spoken sentence, say whether the path ahead is clear and, " +
+                    "if something is in it, which open side to step toward. Prefer a side the scene " +
+                    "marks open. Never send the walker into a blocked side.",
+                fallback: spokenPathCheck())
+        case .readSign:
+            return await readSign()
         case .recalibrate:
             return calibrate() ? "Recalibrated. Face forward and start walking." : "Hold still, then try again."
         case .connectBelt:
@@ -517,6 +565,96 @@ final class AppModel {
         text.isEmpty ? text : text.prefix(1).uppercased() + text.dropFirst()
     }
 
+    // MARK: - Claude reasoning tier (off the safety path)
+
+    /// Draft a spoken line with the fast model, verify it against the same structured snapshot with the
+    /// stricter model, and speak it only if the verifier approves. Any miss (key absent, a failed call,
+    /// a rejected line) falls back to the hardcoded, sensor-grounded string the caller passed in. This
+    /// is the V3 draft-and-verify pass `docs/14` planned; the safety check lives on our side, never in
+    /// the hosted think model. Additive only: the belt already tapped from geometry, this only speaks.
+    private func verifiedLine(instruction: String, fallback: String) async -> String {
+        guard await claude.isConfigured else { return fallback }
+        let xml = perceptionSnapshot().xmlForClaude()
+        guard let draft = await claude.draftLine(systemPrompt: Self.reasoningContract,
+                                                 snapshotXML: xml, instruction: instruction),
+              let verdict = await claude.verify(systemPrompt: Self.reasoningContract,
+                                                snapshotXML: xml, draft: draft),
+              verdict.approved else {
+            return fallback
+        }
+        let phrase = verdict.phrase.trimmingCharacters(in: .whitespacesAndNewlines)
+        return phrase.isEmpty ? fallback : phrase
+    }
+
+    /// Read a sign or printed text the wearer points the camera at. Pull-based: grab one frame from the
+    /// running ARSession (no second camera, never a stream), hand it to Claude vision, speak the read.
+    /// Off the safety path and informational only. Returns a spoken reason when the camera is off or the
+    /// read fails, never a guess.
+    private func readSign() async -> String {
+        guard await claude.isConfigured else {
+            return "Reading text isn't set up right now."
+        }
+        guard depth.isRunning, let jpeg = depth.grabFrameJPEG() else {
+            return "I can't see anything right now. Turn the camera on and point it at the text."
+        }
+        let line = await claude.describeFrame(
+            systemPrompt: Self.visionContract,
+            instruction: "Read any sign, label, number, or printed text in this frame and say it back " +
+                "in one short spoken sentence. If you cannot make out any text, say so plainly.",
+            imageJPEG: jpeg)
+        return line ?? "I couldn't read any text. Hold the camera steady on the sign and try again."
+    }
+
+    /// The rules for the vision read. The frame is the only source; the model must report what it can
+    /// actually read and say so when it cannot, never inventing text. Informational, never a cue.
+    static let visionContract = """
+    You are the eyes of a blind walker, given one photo from a chest-mounted camera. Read the sign, \
+    label, number, or printed text the walker asked about and say it back. Rules:
+    - Report only text you can actually read in the image. If it is blurry, cut off, or absent, say you \
+    cannot read it rather than guessing.
+    - One short calm sentence, meant to be heard, not read. No preamble.
+    - This is informational only. Never give a navigation, steering, or safety instruction.
+    """
+
+    /// The scene Claude reasons over, assembled from the LiDAR bands, the current fused hazard, and the
+    /// route. Read on the main actor where all three already live.
+    private func perceptionSnapshot() -> PerceptionSnapshot {
+        PerceptionSnapshot.make(bands: depth.bands, hazard: currentHazard(),
+                                route: routeContext(), cameraRunning: depth.isRunning)
+    }
+
+    /// The route picture for the snapshot, read from `RouteEngine`'s published state. Nil when no
+    /// route is loaded, so the model never invents navigation context.
+    private func routeContext() -> PerceptionSnapshot.RouteContext? {
+        guard !route.maneuvers.isEmpty, route.path.count >= 2 else { return nil }
+        let turn: String
+        switch route.currentCue?.event {
+        case .arrived: turn = "arriving"
+        case .turnAround: turn = "u-turn"
+        case .turnNow, .turnSlight:
+            turn = (route.currentCue?.mask.contains(.right) ?? false) ? "right" : "left"
+        default: turn = "straight"
+        }
+        return PerceptionSnapshot.RouteContext(nextTurn: turn,
+                                               distanceToNextMeters: route.distanceToNext,
+                                               remainingMeters: route.remaining, onRoute: true)
+    }
+
+    /// The frozen rules both the drafter and the verifier obey. Frozen so it can be prompt-cached, and
+    /// load-bearing for safety: it is what stops Claude from claiming a clear path the LiDAR did not
+    /// confirm. Mirrors `PERCEPTION-AVOIDANCE-HANDOFF.md` §"The reasoning contract."
+    static let reasoningContract = """
+    You write one short spoken line for a blind walker wearing a haptic navigation belt. You are given \
+    a structured scene snapshot in XML, not an image. Rules:
+    - Speak only what the snapshot supports. Never claim a band is clear unless its nearest distance \
+    says so, and never name an object the snapshot does not list.
+    - Recommend at most one action. Prefer a side the snapshot marks open; never send the walker into \
+    a blocked side.
+    - When confidence is low, say the path is uncertain rather than inventing detail.
+    - Keep it to one calm sentence, meant to be heard, not read. No preamble, no lists.
+    The belt already guides the walker from its own sensors; your line only adds spoken context.
+    """
+
     // MARK: - Decide loop
 
     private func startDecideLoop() {
@@ -640,9 +778,12 @@ final class AppModel {
             return route.currentCue
         case .live:
             // Field walk: follow the route from the real GPS fix, steering off the resolved body
-            // heading (GPS course while moving, accuracy-gated compass when stopped). The resolved
-            // value is already body-forward true north, so the calibration offset is bypassed.
-            guard let fix = liveGeoPoint, let heading = resolveLiveHeading() else { return nil }
+            // heading (GPS course while moving, accuracy-gated compass when stopped). resolveLiveHeading
+            // also feeds the calibration walk, so call it every tick even before we are calibrated.
+            // Until the mount offset locks, withhold the turn cue so the belt never opens on a
+            // few-degrees-off heading; the wearer just walks a few steps and it engages.
+            let heading = resolveLiveHeading()
+            guard let fix = liveGeoPoint, isHeadingCalibrated, let heading else { return nil }
             route.updateRoute(location: fix, phoneHeading: heading, applyCalibration: false)
             return route.currentCue
         }
@@ -652,9 +793,15 @@ final class AppModel {
     /// a momentary speed dip between steps does not drop the cue. Returns nil only when there is no
     /// trustworthy heading and none was held.
     private func resolveLiveHeading() -> Double? {
+        // Feed the calibration walk first, then steer with whatever mount offset it has locked (zero
+        // until then). Course while moving ignores the offset; the compass fallback uses it.
+        calibrator.ingest(course: location.course, courseAccuracy: location.courseAccuracy,
+                          speed: location.speed, trueHeading: location.trueHeading,
+                          headingAccuracy: location.headingAccuracy)
         if let resolved = HeadingResolver.resolve(
             course: location.course, courseAccuracy: location.courseAccuracy, speed: location.speed,
-            trueHeading: location.trueHeading, headingAccuracy: location.headingAccuracy) {
+            trueHeading: location.trueHeading, headingAccuracy: location.headingAccuracy,
+            mountOffset: calibrator.mountOffset ?? 0) {
             lastBodyHeading = resolved.degrees
             headingSource = resolved.source.rawValue
             return resolved.degrees

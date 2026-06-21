@@ -65,6 +65,23 @@ enum CitrusSquadConfig {
         "dog", "cat", "backpack", "suitcase", "umbrella",
     ]
 
+    // Claude reasoning tier (off the belt safety path; see AI-USAGE-AUDIT-AND-EXPANSION.md)
+    /// Drafts a spoken line fast and cheap. The line is never trusted until the verifier checks it
+    /// against the snapshot, so a fast model is the right call here.
+    static let claudeDraftModel = "claude-haiku-4-5"
+    /// Verifies the drafted line against the structured snapshot and rejects anything the data does
+    /// not support. Stronger than the drafter, still well under a second on a one-sentence check.
+    static let claudeVerifyModel = "claude-sonnet-4-6"
+    /// Reads small text in a single camera frame (street signs, bus numbers, posted notices). Opus
+    /// has the high-resolution vision the cheaper models lack for fine print.
+    static let claudeVisionModel = "claude-opus-4-8"
+    /// Output cap for the spoken tier. One sentence of speech is well under this; it only guards
+    /// against a runaway response, and keeps the call non-streaming and fast.
+    static let claudeMaxTokens = 320
+    /// How long the spoken tier waits on Claude before giving up and speaking the grounded fallback.
+    /// The belt already tapped from on-device geometry, so a slow line is dropped, never blocking.
+    static let claudeTimeoutSeconds = 6.0
+
     // Obstacle avoidance (LiDAR safety layer, sits above navigation, below the person tier)
     /// Consecutive 10 Hz ticks an obstacle must persist before the avoidance cue activates.
     static let obstacleSettleTicks = 2
@@ -103,4 +120,11 @@ enum CitrusSquadConfig {
     static let courseMaxAccuracyDegrees = 30.0
     /// Reject magnetometer readings worse than this (degrees). The belt can push the compass past it.
     static let headingMaxAccuracyDegrees = 25.0
+
+    // Heading calibration (the walk-to-calibrate flow). See `HeadingCalibrator`.
+    /// Walking samples at the 10 Hz decide rate before the mount offset locks. ~2 s of steady walking.
+    static let calibrationSamplesNeeded = 20
+    /// Maximum spread (degrees) among the samples to accept a lock, so it locks on a straight settled
+    /// walk and not mid-turn. The circular mean averages out per-sample noise well inside this.
+    static let calibrationConsistencyDegrees = 25.0
 }

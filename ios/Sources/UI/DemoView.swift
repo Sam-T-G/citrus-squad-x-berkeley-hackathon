@@ -96,10 +96,23 @@ struct DemoView: View {
                 }
                 talkButton
             }
+            // Manual triggers for the Claude tier, for a demo without the mic. Both need a live camera
+            // frame and an Anthropic key; hidden otherwise. Off the safety path like the voice path.
+            if model.depth.isRunning && model.claudeConfigured {
+                HStack(spacing: 14) {
+                    hudButton("Read sign", tint: .accentColor) {
+                        Task { await model.runDemoCommand(.readSign) }
+                    }
+                    hudButton("Around me", tint: .accentColor) {
+                        Task { await model.runDemoCommand(.describeSurroundings) }
+                    }
+                }
+            }
             if model.isDriving {
                 hudButton("Stop", tint: .gray) { model.stopDriving() }
             }
             voiceTranscript
+            demoLine
         }
         .frame(maxWidth: .infinity)
         .padding(18)
@@ -136,6 +149,18 @@ struct DemoView: View {
         }
         .accessibilityLabel(look.title)
         .accessibilityHint("Sets the destination by voice")
+    }
+
+    /// The line a manual Claude button produced, shown so the room can read the answer without audio.
+    @ViewBuilder private var demoLine: some View {
+        if !model.lastDemoLine.isEmpty {
+            Text(model.lastDemoLine)
+                .font(.caption.weight(.medium))
+                .foregroundStyle(.white)
+                .multilineTextAlignment(.center)
+                .frame(maxWidth: .infinity)
+                .accessibilityElement(children: .combine)
+        }
     }
 
     /// The last thing the wearer said and the agent's reply, so the room can follow a voice command.
@@ -258,22 +283,26 @@ private struct DirectionsBanner: View {
 
     var body: some View {
         let visual = ProductionView.visual(for: bannerCue)
+        let symbol = isCalibrating ? "figure.walk" : visual.symbol
+        let color = isCalibrating ? Color.yellow : visual.color
+        let title = isCalibrating ? "Calibrating" : visual.text
+        let subtitle = isCalibrating ? calibratingSubtitle : distanceToNextText
         return VStack(alignment: .leading, spacing: 8) {
             HStack(spacing: 12) {
-                Image(systemName: visual.symbol)
+                Image(systemName: symbol)
                     .font(.system(size: 32, weight: .bold))
-                    .foregroundStyle(visual.color)
+                    .foregroundStyle(color)
                     .contentTransition(.symbolEffect(.replace))
                 VStack(alignment: .leading, spacing: 1) {
-                    Text(visual.text)
+                    Text(title)
                         .font(.title2.bold())
                         .foregroundStyle(.white)
-                    Text(distanceToNextText)
+                    Text(subtitle)
                         .font(.subheadline.weight(.medium))
                         .foregroundStyle(.white.opacity(0.7))
                 }
             }
-            if hasRoute {
+            if hasRoute, !isCalibrating {
                 HStack(spacing: 14) {
                     Label(remainingText, systemImage: "flag.checkered")
                     Label(etaText, systemImage: "clock")
@@ -286,7 +315,16 @@ private struct DirectionsBanner: View {
         .padding(.vertical, 12)
         .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 16))
         .accessibilityElement(children: .ignore)
-        .accessibilityLabel("\(visual.text), \(distanceToNextText)")
+        .accessibilityLabel("\(title), \(subtitle)")
+    }
+
+    /// During a live walk the belt withholds turns until the mount offset locks; the banner says so.
+    private var isCalibrating: Bool {
+        model.mode == .live && !model.isHeadingCalibrated
+    }
+
+    private var calibratingSubtitle: String {
+        "walk forward a few steps (\(Int(model.calibrationProgress * 100))%)"
     }
 
     /// The route turn to show. Falls back to a calm "Walk on" so the banner never blanks. Gated on a

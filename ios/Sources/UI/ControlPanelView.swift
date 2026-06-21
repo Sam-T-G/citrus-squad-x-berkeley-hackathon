@@ -247,6 +247,11 @@ struct ControlPanelView: View {
             LabeledRow("GPS course", model.location.course < 0 ? "—" : "\(format(model.location.course))°")
             LabeledRow("Speed", model.location.speed < 0 ? "—" : String(format: "%.1f m/s", model.location.speed))
             LabeledRow("Steering from", model.headingSource)
+            LabeledRow("Calibration", model.isHeadingCalibrated
+                ? "locked"
+                : "walk to calibrate (\(Int(model.calibrationProgress * 100))%)")
+            Button("Recalibrate heading") { model.recalibrateHeading() }
+                .buttonStyle(.bordered)
             if model.location.authorization == .notDetermined {
                 Button("Request location permission") { model.location.requestPermission() }
                     .buttonStyle(.borderedProminent)
