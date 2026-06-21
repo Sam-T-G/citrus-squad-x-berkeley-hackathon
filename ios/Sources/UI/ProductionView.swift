@@ -178,9 +178,20 @@ struct ProductionView: View {
         case .visionDanger:
             // The early-warning tier reuses this event for a soft pre-LiDAR heads-up; show it as an
             // advisory, not a confirmed person.
-            return cue.source == .earlyWarning
-                ? ("Heads up, ahead", "exclamationmark.circle", .yellow)
-                : ("Person ahead", "figure.stand", .orange)
+            if cue.source == .earlyWarning {
+                return ("Heads up, ahead", "exclamationmark.circle", .yellow)
+            }
+            // Say "person" only when the detector actually recognized a person. For any other
+            // navigation-class object, name it ("Backpack ahead"); fall back to "Obstruction ahead"
+            // when the class is unknown.
+            if cue.label?.lowercased() == "person" {
+                return ("Person ahead", "figure.stand", .orange)
+            }
+            if let label = cue.label, !label.isEmpty {
+                let name = label.prefix(1).uppercased() + label.dropFirst()
+                return ("\(name) ahead", "exclamationmark.triangle.fill", .orange)
+            }
+            return ("Obstruction ahead", "exclamationmark.triangle.fill", .orange)
         }
     }
 }

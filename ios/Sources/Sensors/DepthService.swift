@@ -158,7 +158,10 @@ extension DepthService: ARSessionDelegate {
     @MainActor private func applyVision(_ result: PersonFrameResult) {
         switch result.action {
         case .report(let side, let distance):
-            visionSink?.report(kind: .person, side: side, distanceMeters: distance)
+            // The wire event stays vision-danger for any close navigation-class object, but carry the
+            // detected label so the demo and voice name what is ahead instead of always saying person.
+            visionSink?.report(kind: .person, side: side, distanceMeters: distance,
+                               label: result.best?.label)
         case .clear:
             visionSink?.clear()
         case .hold:

@@ -29,8 +29,10 @@ final class VisionHazardSource: HazardSource {
     ///   - kind: `.person` for a person-in-path (emits vision-danger), `.obstacle` otherwise.
     ///   - side: which belt quadrant to fire, per the side-is-the-hazard convention in `docs/12`.
     ///   - distanceMeters: best distance estimate, ideally fused with LiDAR depth. -1 if unknown.
-    func report(kind: Hazard.Kind, side: QuadrantMask, distanceMeters: Double = -1) {
-        detected = Hazard(kind: kind, mask: side, distanceMeters: distanceMeters)
+    ///   - label: the detected object class (`person`, `backpack`, ...), so the demo and voice can
+    ///     name what is ahead. Nil when the source does not know the class.
+    func report(kind: Hazard.Kind, side: QuadrantMask, distanceMeters: Double = -1, label: String? = nil) {
+        detected = Hazard(kind: kind, mask: side, distanceMeters: distanceMeters, label: label)
     }
 
     /// Call when the detector no longer sees a target in the path.
