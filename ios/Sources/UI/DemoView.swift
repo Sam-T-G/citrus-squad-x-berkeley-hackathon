@@ -314,8 +314,12 @@ private struct DirectionsBanner: View {
         .padding(.horizontal, 14)
         .padding(.vertical, 12)
         .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 16))
+        .contentShape(Rectangle())
+        .onTapGesture { if isCalibrating { _ = model.calibrate() } }
         .accessibilityElement(children: .ignore)
         .accessibilityLabel("\(title), \(subtitle)")
+        .accessibilityAddTraits(isCalibrating ? .isButton : [])
+        .accessibilityHint(isCalibrating ? "Double tap to calibrate facing forward now" : "")
     }
 
     /// During a live walk the belt withholds turns until the mount offset locks; the banner says so.
@@ -323,8 +327,10 @@ private struct DirectionsBanner: View {
         model.mode == .live && !model.isHeadingCalibrated
     }
 
+    /// Walking outdoors locks it best (it catches the magnetic bias), but a tap captures the current
+    /// facing as forward so the demo is never stuck calibrating indoors or on the bench.
     private var calibratingSubtitle: String {
-        "walk forward a few steps (\(Int(model.calibrationProgress * 100))%)"
+        "walk a few steps, or tap to set forward (\(Int(model.calibrationProgress * 100))%)"
     }
 
     /// The route turn to show. Falls back to a calm "Walk on" so the banner never blanks. Gated on a

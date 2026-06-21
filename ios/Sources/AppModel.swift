@@ -181,6 +181,10 @@ final class AppModel {
     func calibrate() -> Bool {
         guard location.trueHeading >= 0 else { return false }
         route.calibrate(phoneHeading: location.trueHeading)
+        // Also satisfy the live-walk calibrator, so Live mode is not stuck "Calibrating" when a GPS
+        // walk is not possible (indoors, on the bench). Trusts the compass as forward (offset 0); a
+        // walking relock is still better outdoors where it can capture the magnetic bias too.
+        calibrator.lockManually()
         return true
     }
 
@@ -886,6 +890,9 @@ final class AppModel {
                    "\(decided.event.label) mask=0x\(String(decided.mask.rawValue, radix: 16)) [\(decided.source.rawValue)]",
                    dedupKey: "\(decided.event.rawValue)-\(decided.mask.rawValue)-\(decided.source.rawValue)")
         stageToBelt(decided)
+        // Let the narration defer to the voice agent when it has the floor, so the two spoken channels
+        // do not collide; an urgent hazard still speaks through (decided inside the sink).
+        audio.voiceActive = voice.isEngaged
         for sink in cueSinks { sink.emit(decided) }
     }
 

@@ -82,6 +82,14 @@ struct HeadingCalibrator: Equatable, Sendable {
         state = .collecting(progress: 0)
     }
 
+    /// Lock immediately with a given mount offset, for the manual "I'm facing forward" capture that
+    /// works stationary and indoors, where the walk-based lock can never gather GPS-course samples.
+    /// The default offset of 0 trusts the compass as body-forward (it skips the magnetic-bias
+    /// correction the walking lock would find, so a walk relock is still better when one is possible).
+    mutating func lockManually(offsetDegrees: Double = 0) {
+        state = .locked(offsetDegrees: offsetDegrees)
+    }
+
     // MARK: - Circular statistics (pure, unit tested)
 
     /// The mean of angles, by averaging their unit vectors, so it is correct across the 0/360 wrap.
