@@ -18,6 +18,7 @@ final class AppModel {
     let depth = DepthService()
     let route = RouteEngine()
     let thermal = ThermalMonitor()
+    let objectDetection = ObjectDetectionService()
 
     /// Where the ESP32 is listening. Editable from the control panel.
     var espHost: String = "192.168.4.1"
@@ -67,6 +68,9 @@ final class AppModel {
         // linked. Belt staging simply no-ops until a transmitter exists.
         startDecideLoop()
         Task { directionsUsage = await directions.usage() }
+        // Wire CV pipeline into DepthService now; model loads async in the background.
+        // The callback no-ops until both the model is loaded and depth is running.
+        objectDetection.start(depthService: depth, hazard: vision)
     }
 
     // MARK: - Link control

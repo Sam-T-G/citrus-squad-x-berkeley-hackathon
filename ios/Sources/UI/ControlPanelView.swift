@@ -25,6 +25,7 @@ struct ControlPanelView: View {
                 headingCard
                 gpsCard
                 depthCard(obstacleEnabled: $model.obstacleCuesEnabled)
+                cvCard
                 motionCard
                 soakCard
             }
@@ -227,6 +228,34 @@ struct ControlPanelView: View {
                     .disabled(!model.depth.isSupported)
             }
         }
+    }
+
+    // MARK: - Object detection (CoreML + LiDAR)
+
+    private var cvCard: some View {
+        Card(title: "Object detection (CoreML)", status: cvStatus) {
+            LabeledRow("Model", model.objectDetection.modelLoaded ? "loaded" : "not loaded")
+            LabeledRow("Detections", "\(model.objectDetection.detectionCount)")
+            if let threat = model.objectDetection.currentThreat {
+                LabeledRow("Nearest", "\(threat.label) \(String(format: "%.1f m", threat.distanceMeters))")
+                LabeledRow("Level", "\(threat.level)")
+                LabeledRow("Action", "\(threat.action)")
+            } else {
+                LabeledRow("Nearest", "none")
+            }
+            Toggle("Enable object detection", isOn: Binding(
+                get: { model.objectDetection.isEnabled },
+                set: { model.objectDetection.isEnabled = $0 }
+            ))
+            if let err = model.objectDetection.lastError {
+                Text(err).font(.caption).foregroundStyle(.red)
+            }
+        }
+    }
+
+    private var cvStatus: CardStatus {
+        guard model.objectDetection.modelLoaded else { return .pending }
+        return model.objectDetection.isEnabled ? .pass : .pending
     }
 
     // MARK: - Motion

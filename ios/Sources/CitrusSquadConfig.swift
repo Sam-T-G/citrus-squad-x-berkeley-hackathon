@@ -38,4 +38,19 @@ enum CitrusSquadConfig {
     static let maneuverArriveMeters = 2.0
     /// Virtual walking speed for the route simulator, meters per second.
     static let walkingSpeed = 1.3
+
+    // Object detection (CoreML + LiDAR fusion, docs/12 §7)
+    /// YOLOv8n confidence cutoff. Low for safety: fewer misses, more false positives filtered by settle.
+    static let cvConfidenceThreshold: Float = 0.35
+    /// Consecutive detection frames required before reporting a hazard. Kills single-frame noise.
+    static let cvSettleFrames = 3
+    /// Frames to suppress re-firing the same quadrant after a hazard clears (~1 s at 10 Hz input).
+    static let cvRefractoryFrames = 10
+    /// Horizontal norm range treated as "dead ahead" (center of the portrait view).
+    static let cvInPathNormMin = 0.35
+    static let cvInPathNormMax = 0.65
+    /// Distance thresholds for ThreatLevel grading.
+    static let cvUrgentMeters = 1.5
+    static let cvWarningMeters = 3.0
+    static let cvAdvisoryMeters = 5.0
 }

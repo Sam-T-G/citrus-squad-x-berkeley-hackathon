@@ -3,8 +3,8 @@
 Read this first. It is the single source of truth for where the project is right now, so any agent (or teammate) can pick up without re-reading the whole repo. It is a living document: whoever lands meaningful work updates it in the same pass. The keep-current rule is at the bottom.
 
 **Last updated:** 2026-06-20
-**Branch:** `sam/ios-app-base`
-**Latest commit:** `206edea` Make the LiDAR obstacle cue directional (three-band sampling)
+**Branch:** `cole/computer-vision`
+**Latest commit:** (in progress) Add on-device CoreML path: ObjectDetectionService + CollisionPredictor
 
 ## TL;DR
 
@@ -25,6 +25,7 @@ These are settled. Do not reopen without Sam.
 - **Native iOS Swift** is the stack.
 - **Phone owns all sensing.** Direction (Maps + compass), proximity (LiDAR), and person-in-path (camera, stretch). The ESP32 is the actuator only.
 - **Coral is dropped from the base**, kept only as an optional sponsor-angle stretch. The phone LiDAR/camera covers the safety story. See `docs/05-vision-tier.md`.
+- **On-device CoreML path wired.** `ObjectDetectionService` + `CollisionPredictor` compile clean under Swift 6 strict concurrency. `DepthService.onFrame` delivers RGB + depth + band depths at 10 Hz. CV pipeline activates once `yolov8n.mlpackage` is added to the Xcode target.
 - **Safety beats direction.** The phone is the single LC2 sender and arbitrates: an active hazard preempts the turn cue for that heartbeat, one packet per tick. See `docs/12-perception-and-safety-design.md` §4.
 - **Hazard tap means "obstacle is on this side,"** matching the turn-cue convention.
 - **LC2 events:** `0x20` turn-slight, `0x21` turn-now, `0x22` turn-around, `0x23` arrived, `0x40` obstacle-near (LiDAR, base), `0x10` vision-danger (camera stretch or Coral), `0x00` idle. New event `0x40` reuses the sustained tap-train pattern, so the four-pattern cap holds. See `docs/03-protocol.md`.
@@ -80,9 +81,10 @@ LC2 is a 4-byte wire format: event, quadrant mask, intensity, sequence. Defined 
 **In flight / next:**
 - **Thermal soak run.** Instrumented but not yet run on the phone. Top open unknown. Procedure in `docs/12` §6 and the soak card.
 - **Belt bring-up.** ESP32 + servos on the bench, then the live LC2 round-trip. Not yet done on hardware.
-- **Camera person-in-path stretch** (`0x10`, on-device Vision gated by LiDAR distance). Designed, not built.
 - **Live Maps key** entry and a real cached demo route.
-- **Depth hardening:** ground-plane rejection at the mount angle, threshold tuning, false-positive discipline (settle / hysteresis / refractory) per `docs/12`.
+- **Depth hardening:** ground-plane rejection at the mount angle, threshold tuning, false-positive discipline per `docs/12`.
+- **Model export + bundle:** export `yolov8n.mlpackage` and drag it into the Xcode target. Until then `ObjectDetectionService` starts but reports `modelLoaded = false` and no detections.
+- **Band orientation verify:** confirm depth map x-axis = left/right in portrait hold at the chest mount angle. One in-person bench test with the phone.
 
 ## Code map (`ios/Sources/`)
 
@@ -93,7 +95,7 @@ LC2 is a 4-byte wire format: event, quadrant mask, intensity, sequence. Defined 
 - `Routing/` — `Bearing` (pure geometry), `RouteEngine` (quadrant + calibration + current cue), `Maneuver`, `RouteSimulator` (no-GPS drive), `DirectionsClient` + `DirectionsService` (Maps + cost caps).
 - `Sensors/` — `LocationService` (heading + GPS), `MotionService` (50 Hz), `DepthService` (ARKit LiDAR, three-band).
 - `Networking/` — `LC2Packet` (codec), `LC2Transmitter` (actor: UDP + heartbeat + sequence).
-- `Perception/` — `Cues` (`ResolvedCue`, distance-graded intensity), `VisionHazardSource` (camera stretch), `AudioCueSink`, and the `HazardSource` / `CueSink` protocols that make sources and sinks pluggable.
+- `Perception/` — `Cues` (`ResolvedCue`, distance-graded intensity), `VisionHazardSource` (camera stretch), `AudioCueSink`, `ObjectDetectionService` (CoreML inference + LiDAR fusion, reports via `VisionHazardSource`), `CollisionPredictor` (pure threat/action logic, feeds audio layer), and the `HazardSource` / `CueSink` protocols that make sources and sinks pluggable.
 - `Diagnostics/` — `ThermalMonitor` (soak sampling).
 - `UI/` — `ProductionView`, `ControlPanelView`, `Cards`.
 
@@ -127,6 +129,7 @@ LC2 is a 4-byte wire format: event, quadrant mask, intensity, sequence. Defined 
 ## Session log
 
 - **2026-06-20** — Stack confirmed Swift. Base app scaffolded and compiling. LiDAR folded into the base as the safety tier; Coral dropped to optional stretch. Design docs `11` and `12` added; canon docs (`00`–`10`, `IOS-APP-PLAN`) reconciled to the phone-perception architecture. `0x40 obstacle-near` added and made directional (three-band). Cost-capped Directions, route simulator, split production/diagnostics UI. Thermal soak instrumentation added; soak not yet run. Full rename WAND -> Citrus Squad across code, firmware, docs, and bundle id; app reinstalled on the phone under the new name.
+- **2026-06-20 (Cole)** — On-device CoreML path landed on `cole/computer-vision`. `ObjectDetectionService` hooks into `DepthService.onFrame` (10 Hz, RGB + depth + band depths), runs `VNCoreMLRequest` on `ARFrame.capturedImage` at 5 Hz, fuses bounding boxes with LiDAR band depths, applies settle (3 frames) + refractory (10 frames) filtering, and reports via `VisionHazardSource`. `CollisionPredictor` computes threat level + dodge action for the audio layer. All compile under Swift 6 strict concurrency; 26 existing tests green. Pending: export `yolov8n.mlpackage` and add to Xcode target to activate detections.
 
 ## Keeping this current (the rule)
 

@@ -299,12 +299,12 @@ paces = ceil(0.54 / 0.75) = 1
 
 ## Open items
 
-- [ ] Implement `ObjectDetectionService.swift` (CoreML + ARKit frame subscription)
-- [ ] Implement `CollisionPredictor.swift` + `NavigationAction.swift` + `ThreatAssessment.swift`
-- [ ] Export `yolov8n.mlpackage` and add to Xcode target
-- [ ] Wire `ObjectDetectionService` into `AppModel`
-- [ ] Confirm ARFrame depth map resolution on iPhone 15 Pro Max (assumed 256x192)
-- [ ] Tune `confidence_threshold` on real footage (currently 0.35)
-- [ ] Tune `depth_crop_ratio` on real footage (currently 0.5)
+- [x] Implement `ObjectDetectionService.swift` (CoreML + ARKit frame subscription via `DepthService.onFrame`)
+- [x] Implement `CollisionPredictor.swift` — pure threat/action logic; `ThreatLevel`, `NavigationAction`, `ObstacleThreat`, `CVDetection` types; `CollisionPredictor` enum
+- [x] Wire `ObjectDetectionService` into `AppModel` (`objectDetection.start(depthService:hazard:)` in `init`)
+- [ ] Export `yolov8n.mlpackage` and add to Xcode target (one-time step: `python3 -c "from ultralytics import YOLO; YOLO('yolov8n.pt').export(format='coreml')"`, drag `yolov8n.mlpackage` into Sources group, check "Add to target")
+- [ ] Confirm ARKit depth map x-axis = left/right in portrait mount. One bench test: walk toward something on the left, verify depth.left drops and belt fires left. See `DepthService.bandedNearest` split on `x` vs `width`.
+- [ ] Tune `cvConfidenceThreshold` on real footage (currently 0.35 in `CitrusSquadConfig`)
+- [ ] Confirm `VNRecognizedObjectObservation` output from the CoreML model — requires NMS export. If objects aren't detected, re-export: `YOLO('yolov8n.pt').export(format='coreml', nms=True)`
 - [ ] Confirm wire format between Python server and iOS sender if Wi-Fi path is kept as fallback
 - [ ] Add keep-alive / ping-pong to the `/haptics` WebSocket if the controller idles
