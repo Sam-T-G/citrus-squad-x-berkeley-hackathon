@@ -13,7 +13,8 @@ So this server translates each LC2 cue down to that single byte (see
 `lc2_to_command`) and only writes when the command CHANGES, so the firmware's
 one-shot patterns are not re-triggered by the 10 Hz heartbeat.
 
-Wire in:  4 raw LC2 bytes per WebSocket frame  ->  event, mask, intensity, seq
+Wire in:  4 raw LC2 bytes per packet            ->  event, mask, intensity, seq
+          over UDP (the phone's real link) or a WebSocket frame (test client / debug)
 Wire out: 1 ASCII command byte per cue change   ->  b's' / b'l' / b'r' / b'f'
 
 Run:  uvicorn app:app --host 0.0.0.0 --port 8080
@@ -23,6 +24,7 @@ Config via env:
   SERIAL_PORT   serial device, e.g. /dev/tty.usbmodem1101. Unset = auto-detect, then mock.
   SERIAL_BAUD   default 9600 (matches Serial.begin(9600) in belt.ino)
   PORT          HTTP/WebSocket port, default 8080
+  UDP_PORT      UDP port the phone sends LC2 to, default 9999 (matches iOS espPort)
   WARMUP_S      seconds to wait after opening serial, for the Arduino auto-reset, default 2.0
 
 See docs/15-belt-server-bridge-plan.md for the why behind every choice here.
@@ -49,6 +51,9 @@ except ImportError:  # the app still runs in mock mode without these
 
 SERIAL_BAUD = int(os.environ.get("SERIAL_BAUD", "9600"))
 HTTP_PORT = int(os.environ.get("PORT", "8080"))
+# UDP port the phone's LC2Transmitter sends to. Matches the iOS default `espPort` (9999),
+# so the operator only has to point the belt host at this laptop's IP.
+UDP_PORT = int(os.environ.get("UDP_PORT", "9999"))
 WARMUP_S = float(os.environ.get("WARMUP_S", "2.0"))
 
 # LC2 event codes (docs/03-protocol.md).
@@ -146,6 +151,8 @@ class Hub:
         self.frames_out = 0
         self.last_frame_ts = 0.0
         self.last_lc2 = b""
+        # Where the last packet came from ("ip:port" for UDP, "ws" for the WebSocket path).
+        self.last_src = ""
         # Last command actually written, so a repeated cue (the 10 Hz heartbeat restages
         # the same one) is not re-sent and the firmware's one-shot pattern fires once.
         self.last_cmd: bytes | None = None
@@ -208,10 +215,32 @@ class Hub:
 hub = Hub()
 
 
+class LC2DatagramProtocol(asyncio.DatagramProtocol):
+    """Receives the phone's raw 4-byte LC2 packets over UDP and feeds the same hub the
+    WebSocket path uses. This is the real phone link: the iOS `LC2Transmitter` sends UDP
+    at 10 Hz to the configured host:port, so the operator just points the belt host at
+    this laptop. The WebSocket `/belt` stays for the stand-in test client and debugging."""
+
+    def datagram_received(self, data: bytes, addr) -> None:
+        if len(data) >= 4:
+            hub.last_src = f"{addr[0]}:{addr[1]}"
+            hub.submit(bytes(data[:4]))
+
+
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     task = asyncio.create_task(hub.writer())
+    loop = asyncio.get_running_loop()
+    udp_transport = None
+    try:
+        udp_transport, _ = await loop.create_datagram_endpoint(
+            LC2DatagramProtocol, local_addr=("0.0.0.0", UDP_PORT))
+        print(f"[udp] listening for phone LC2 packets on UDP {UDP_PORT}")
+    except Exception as exc:
+        print(f"[udp] could not bind UDP {UDP_PORT}: {exc!r} (WebSocket path still works)")
     yield
+    if udp_transport is not None:
+        udp_transport.close()
     task.cancel()
     with suppress(asyncio.CancelledError):
         await task
@@ -243,6 +272,7 @@ async def belt(ws: WebSocket) -> None:
                 break
             lc2 = parse_inbound(message)
             if lc2 is not None:
+                hub.last_src = "ws"
                 hub.submit(lc2)
     finally:
         hub.ws_clients = max(0, hub.ws_clients - 1)
@@ -263,6 +293,8 @@ async def health() -> JSONResponse:
         "last_frame_age_s": age,
         "last_lc2_hex": hub.last_lc2.hex(" ") if hub.last_lc2 else None,
         "last_cmd": hub.last_cmd.decode() if hub.last_cmd else None,
+        "udp_port": UDP_PORT,
+        "last_src": hub.last_src or None,
     })
 
 
