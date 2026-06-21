@@ -30,9 +30,17 @@ struct ObstacleAvoidanceDecisionTests {
         #expect(directive == .steer(.left, 1.0))
     }
 
-    @Test func bothSidesBlockedStops() {
+    @Test func bothSidesHaveReturnsButOneIsPassableSteers() {
+        // Both sides report something within the generous 1.8 m threshold, but the right side has
+        // room to pass (1.2 m > min side clearance), so steer right instead of stopping.
         let directive = ObstacleAvoidance.decide(left: 1.0, center: 1.0, right: 1.2, threshold: threshold, near: near)
-        #expect(directive == .stop(1.0))
+        #expect(directive == .steer(.right, 1.0))
+    }
+
+    @Test func boxedInWithNoRoomEitherSideStops() {
+        // Path ahead blocked and both sides closer than the min side clearance: no way through, stop.
+        let directive = ObstacleAvoidance.decide(left: 0.7, center: 0.8, right: 0.6, threshold: threshold, near: near)
+        #expect(directive == .stop(0.6))
     }
 
     @Test func dangerCloseOnOneSideStillTriggers() {

@@ -53,6 +53,10 @@ enum CitrusSquadConfig {
     static let obstacleSettleTicks = 2
     /// Ticks a clear reading must persist before the avoidance cue releases, to stop flicker.
     static let obstacleHoldTicks = 3
+    /// A side needs at least this much clearance to count as a way through. With the path ahead
+    /// blocked and both sides closer than this, the layer stops instead of steering. Below the
+    /// detection threshold, so a side can have a return and still be passable.
+    static let avoidanceMinSideClearance = 1.0
 
     // Navigation
     /// How close to a maneuver point counts as reaching it (advance to the next).

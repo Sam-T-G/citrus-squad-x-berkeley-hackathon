@@ -1,8 +1,13 @@
 import Foundation
 import ARKit
+import CoreImage
 import ImageIO
 import Observation
 import os
+
+/// CGImage is immutable once created, so it is safe to carry across the hop from the perception
+/// queue to the main actor.
+private struct SendableImage: @unchecked Sendable { let image: CGImage }
 
 /// Nearest depth in each of three vertical bands of the frame, in meters. -1 means no valid read.
 struct BandDepths: Sendable, Equatable {
@@ -47,6 +52,18 @@ final class DepthService: NSObject {
     private weak var visionSink: VisionHazardSource?
     private weak var detectionStore: DetectionStore?
 
+    /// Early-warning layer (diagnostics only in this step). The tracker watches the per-frame boxes
+    /// for an object holding the wearer's heading and growing, and flags it before LiDAR has a return.
+    /// It runs on the main actor inside `applyVision`, where the boxes and the yaw rate are both in
+    /// reach, so it stays off the heavy perception queue. See `Perception/BearingTracker.swift`.
+    private let bearingTracker = BearingTracker()
+    private var bearingFrameIndex = 0
+    private weak var interferenceStore: InterferenceStore?
+
+    /// Wearer yaw rate in rad/s, refreshed each decide tick by `AppModel` from `MotionService`. Feeds
+    /// the tracker's self-rotation gate so a head turn does not read as a centered obstacle.
+    var latestYawRate: Double = 0
+
     /// Rear camera in portrait. The one runtime unknown; see `PersonDetector.toNativeNormalized`.
     nonisolated private static let cameraOrientation: CGImagePropertyOrientation = .right
     nonisolated private static let visionThrottle = 1.0 / CitrusSquadConfig.visionMaxHz
@@ -54,6 +71,15 @@ final class DepthService: NSObject {
     private(set) var isRunning = false
     private(set) var bands = BandDepths()
     private(set) var lastError: String?
+
+    /// A downscaled RGB frame for the demo preview, taken from the same ARFrame the depth and the
+    /// detector use. Nil when depth is not running. This is what lets the camera panel show the live
+    /// feed while LiDAR and the person tier run, with no second capture session to contend over the
+    /// rear camera.
+    private(set) var previewImage: CGImage?
+
+    /// CIContext is documented thread-safe for rendering, so the perception queue uses it directly.
+    nonisolated(unsafe) private let ciContext = CIContext(options: nil)
 
     /// Fire the obstacle flag inside this range. Tunable; demo default from `docs/12`.
     var thresholdMeters: Double = CitrusSquadConfig.proximityThresholdMeters
@@ -75,10 +101,12 @@ final class DepthService: NSObject {
         session.delegateQueue = perceptionQueue
     }
 
-    /// Wire the person tier to its sink and the demo overlay. Called once by `AppModel`.
-    func attachVision(sink: VisionHazardSource, store: DetectionStore) {
+    /// Wire the person tier to its sink, the demo overlay, and the early-warning surface. Called once
+    /// by `AppModel`.
+    func attachVision(sink: VisionHazardSource, store: DetectionStore, interference: InterferenceStore) {
         visionSink = sink
         detectionStore = store
+        interferenceStore = interference
     }
 
     func start() {
@@ -95,6 +123,7 @@ final class DepthService: NSObject {
     func stop() {
         session.pause()
         isRunning = false
+        previewImage = nil
     }
 }
 
@@ -104,6 +133,14 @@ extension DepthService: ARSessionDelegate {
         guard frameTick % 6 == 0, let depth = frame.sceneDepth?.depthMap else { return }
         let sampled = Self.bandedNearest(in: depth)
         Task { @MainActor in self.bands = sampled }
+
+        // Publish a downscaled preview from the same frame so the demo shows the camera, LiDAR, and
+        // the detector from one session. Throttled below the band rate; it is cosmetic, so it is the
+        // first thing to shed under load.
+        if frameTick % 12 == 0, let cg = Self.previewImage(from: frame.capturedImage, context: ciContext) {
+            let wrapped = SendableImage(image: cg)
+            Task { @MainActor in self.previewImage = wrapped.image }
+        }
 
         // Person tier off the same frame: RGB for YOLO, this depth map for fusion. process() throttles
         // itself to the camera rate, so most frames return nil here and the cue is left untouched.
@@ -128,6 +165,19 @@ extension DepthService: ARSessionDelegate {
             break
         }
         detectionStore?.update(result.overlay)
+
+        // Early-warning pass: the same boxes, watched across frames for constant bearing plus looming.
+        // Diagnostics only here; the flags surface in the demo console and touch no cue. boxHeight is
+        // the looming signal, horizontalNorm the bearing.
+        bearingFrameIndex += 1
+        let observations = result.overlay.map {
+            BoxObservation(label: $0.label, confidence: $0.confidence,
+                           horizontalNorm: Double($0.box.midX), boxHeight: Double($0.box.height))
+        }
+        let flags = bearingTracker.update(observations: observations,
+                                          yawRateRadPerSecond: latestYawRate,
+                                          frameIndex: bearingFrameIndex)
+        interferenceStore?.update(flags)
     }
 
     nonisolated func session(_ session: ARSession, didFailWithError error: Error) {
@@ -167,6 +217,16 @@ extension DepthService: ARSessionDelegate {
             value == .greatestFiniteMagnitude ? -1 : Double(value)
         }
         return BandDepths(left: meters(smallest[0]), center: meters(smallest[1]), right: meters(smallest[2]))
+    }
+
+    /// A downscaled, upright CGImage from the AR frame's RGB buffer for the demo preview. Oriented
+    /// the same way as the detector so the overlay boxes line up. Nil if the buffer is empty.
+    nonisolated static func previewImage(from pixelBuffer: CVPixelBuffer, context: CIContext) -> CGImage? {
+        let oriented = CIImage(cvPixelBuffer: pixelBuffer).oriented(cameraOrientation)
+        guard oriented.extent.width > 0 else { return nil }
+        let scale = 480.0 / oriented.extent.width
+        let scaled = oriented.transformed(by: CGAffineTransform(scaleX: scale, y: scale))
+        return context.createCGImage(scaled, from: scaled.extent)
     }
 }
 

@@ -42,6 +42,12 @@ targets:
         NSLocationWhenInUseUsageDescription: CitrusSquad reads heading and GPS to compute which way to turn.
         NSMotionUsageDescription: CitrusSquad reads the accelerometer and gyroscope for motion features.
         NSCameraUsageDescription: CitrusSquad uses the LiDAR depth camera to sense nearby obstacles.
+        NSMicrophoneUsageDescription: CitrusSquad listens while you hold the talk button, so you can speak a destination or ask what is around you.
+        # Injected at build time from Local.xcconfig (gitignored). The plist stores the literal
+        # $(VAR); the real key only appears in the build output, which is also gitignored.
+        # Read in Swift through Sources/Secrets.swift. See docs/14-voice-and-reasoning-plan.md.
+        DeepgramAPIKey: "$(DEEPGRAM_API_KEY)"
+        AnthropicAPIKey: "$(ANTHROPIC_API_KEY)"
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: $(APP_BUNDLE_ID)

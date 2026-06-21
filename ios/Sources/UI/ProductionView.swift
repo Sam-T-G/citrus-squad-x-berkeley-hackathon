@@ -13,6 +13,7 @@ struct ProductionView: View {
             header
             cueDisplay
             BeltView(mask: model.resolved.mask, accent: Self.visual(for: model.resolved).color)
+            VoiceControlView(voice: model.voice)
             Spacer()
             controls
         }

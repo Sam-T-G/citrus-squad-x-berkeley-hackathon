@@ -27,4 +27,17 @@ enum Feedback {
             break
         }
     }
+
+    /// Voice is now listening: the Siri-style begin-record tone plus a haptic, so the wearer knows to
+    /// start speaking without looking at the screen.
+    @MainActor static func voiceListening() {
+        AudioServicesPlaySystemSound(1113)   // begin record
+        UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+    }
+
+    /// The turn ended and the agent is processing: the end-record tone plus a softer haptic.
+    @MainActor static func voiceProcessing() {
+        AudioServicesPlaySystemSound(1114)   // end record
+        UIImpactFeedbackGenerator(style: .light).impactOccurred()
+    }
 }

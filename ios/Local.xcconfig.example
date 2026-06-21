@@ -13,3 +13,13 @@ DEVELOPMENT_TEAM =
 // Your app's bundle id. Make it unique to you so it does not clash with a teammate's signing.
 // Convention: com.<yourname>.CitrusSquad
 APP_BUNDLE_ID = com.example.CitrusSquad
+
+// --- Voice layer API keys (see docs/14-voice-and-reasoning-plan.md). ---
+// These flow into Info.plist at build time and are read by Sources/Secrets.swift.
+// Local.xcconfig is gitignored, so real keys never get committed. Use spend-capped keys
+// and revoke them after the event. Leaving a key blank disables that service; the rest
+// of the app runs normally.
+// Gotcha: xcconfig treats // as the start of a comment, so a value must not contain //.
+// Deepgram and Anthropic keys never contain //, so this is fine in practice.
+DEEPGRAM_API_KEY =
+ANTHROPIC_API_KEY =

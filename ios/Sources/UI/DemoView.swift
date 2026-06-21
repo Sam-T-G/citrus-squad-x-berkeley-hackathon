@@ -16,7 +16,7 @@ struct DemoView: View {
                 cueStrip
                 beltPanel
                 MapSection(model: model)
-                CameraPanel(camera: model.camera, detections: model.detections)
+                CameraPanel(depth: model.depth, detections: model.detections, interference: model.interference)
                 DepthPanel(model: model)
             }
             .padding()

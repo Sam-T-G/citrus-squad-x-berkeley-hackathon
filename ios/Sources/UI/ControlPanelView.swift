@@ -1,5 +1,6 @@
 import SwiftUI
 import CoreLocation
+import UIKit
 
 /// The diagnostics console: one card per subsystem (link, navigation, heading, GPS, depth, motion,
 /// thermal soak) for bench-testing every sensor and the belt link. The clean operator screen for
@@ -25,12 +26,58 @@ struct ControlPanelView: View {
                 headingCard
                 gpsCard
                 depthCard(obstacleEnabled: $model.obstacleCuesEnabled)
+                avoidanceCard
+                eventLogCard
                 motionCard
                 soakCard
             }
             .padding()
         }
         .background(Color(.systemBackground))
+    }
+
+    // MARK: - Avoidance (live)
+
+    private var avoidanceCard: some View {
+        Card(title: "Avoidance (LiDAR)", status: model.avoidanceFiltered == "clear" ? .pending : .pass) {
+            LabeledRow("Bands L / C / R", bandText)
+            LabeledRow("Threshold", String(format: "%.1f m", model.depth.thresholdMeters))
+            LabeledRow("Danger-near", String(format: "%.1f m", CitrusSquadConfig.dangerNearMeters))
+            LabeledRow("Raw decision", model.avoidanceRaw)
+            LabeledRow("Belt (debounced)", model.avoidanceFiltered)
+            Text("A band reads its nearest return within threshold. Both sides blocked → stop; one side blocked → steer to the other; else steer to the roomier side.")
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+        }
+    }
+
+    // MARK: - Event log
+
+    private var eventLogCard: some View {
+        Card(title: "Event log", status: .pending) {
+            HStack {
+                Button("Copy") { UIPasteboard.general.string = model.events.exportText() }
+                    .buttonStyle(.bordered)
+                Button("Clear") { model.events.clear() }
+                    .buttonStyle(.bordered)
+                Spacer()
+                Text("\(model.events.events.count) events").font(.caption).foregroundStyle(.secondary)
+            }
+            if model.events.events.isEmpty {
+                Text("No events yet. Start depth and move toward an obstacle.")
+                    .font(.caption).foregroundStyle(.secondary)
+            } else {
+                ForEach(model.events.events.suffix(40).reversed()) { event in
+                    HStack(alignment: .top, spacing: 6) {
+                        Text(event.time).foregroundStyle(.secondary)
+                        Text("[\(event.tag)]").foregroundStyle(event.tag == "avoid" ? .orange : .blue)
+                        Text(event.detail)
+                    }
+                    .font(.caption2.monospaced())
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                }
+            }
+        }
     }
 
     private var header: some View {

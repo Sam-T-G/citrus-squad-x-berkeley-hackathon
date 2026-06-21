@@ -1,25 +1,33 @@
 import SwiftUI
 
-/// Live camera with the vision model's detections drawn on top. The camera feed and the overlay
-/// renderer are here; the detections come from `DetectionStore`, which Cole's OpenCV model fills.
-/// Until then, "Sample box" injects a fake detection so the overlay is visibly working.
+/// Live camera with the vision model's detections drawn on top. Both the preview frame and the
+/// detection boxes come from the one `DepthService` ARSession, so the camera, the LiDAR depth, and
+/// the person detector all run together off a single rear-camera session. The detections come from
+/// `DetectionStore`, which the YOLO tier fills; "Sample box" injects a fake one to show the overlay.
 struct CameraPanel: View {
-    let camera: CameraService
+    let depth: DepthService
     let detections: DetectionStore
+    let interference: InterferenceStore
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             Label("Camera + vision", systemImage: "camera.viewfinder").font(.headline)
 
             ZStack {
-                if camera.isRunning {
-                    CameraPreview(session: camera.session)
+                if let image = depth.previewImage {
+                    Image(decorative: image, scale: 1, orientation: .up)
+                        .resizable()
+                        .scaledToFill()
                     DetectionOverlay(detections: detections.detections)
+                    if let flag = interference.active {
+                        EarlyWarningBanner(flag: flag)
+                    }
                 } else {
                     RoundedRectangle(cornerRadius: 12)
                         .fill(Color(.systemGray5))
                         .overlay {
-                            Text(camera.isAuthorized ? "Camera stopped" : "Camera permission needed")
+                            Text(placeholder)
+                                .multilineTextAlignment(.center)
                                 .foregroundStyle(.secondary)
                         }
                 }
@@ -27,10 +35,10 @@ struct CameraPanel: View {
             .frame(height: 260)
             .clipShape(RoundedRectangle(cornerRadius: 12))
 
-            Text("Detections: \(detections.detections.count)")
+            Text("Detections: \(detections.detections.count)   Early warnings: \(interference.flaggedFrameCount)")
                 .font(.caption.monospaced())
                 .foregroundStyle(.secondary)
-            Text("Stop Depth (LiDAR) before starting the camera; they share the rear camera.")
+            Text("One session powers the camera, LiDAR depth, and the detector together.")
                 .font(.caption2)
                 .foregroundStyle(.secondary)
 
@@ -41,20 +49,67 @@ struct CameraPanel: View {
         .clipShape(RoundedRectangle(cornerRadius: 16))
     }
 
+    private var placeholder: String {
+        guard depth.isSupported else { return "LiDAR not supported on this device" }
+        return depth.isRunning ? "Starting camera…" : "Start depth to show the camera + detections"
+    }
+
     private var controls: some View {
         HStack {
-            if camera.isAuthorized {
-                if camera.isRunning {
-                    Button("Stop") { camera.stop() }.buttonStyle(.bordered)
-                } else {
-                    Button("Start camera") { camera.start() }.buttonStyle(.borderedProminent)
-                }
+            if depth.isRunning {
+                Button("Stop depth") { depth.stop() }.buttonStyle(.bordered)
             } else {
-                Button("Allow camera") { camera.requestPermission() }.buttonStyle(.borderedProminent)
+                Button("Start depth") { depth.start() }
+                    .buttonStyle(.borderedProminent)
+                    .disabled(!depth.isSupported)
             }
             Spacer()
             Button("Sample box") { detections.injectSample() }.buttonStyle(.bordered)
             Button("Clear") { detections.clear() }.buttonStyle(.bordered)
+        }
+    }
+}
+
+/// The early-warning readout, shown over the preview when the bearing tracker raises a flag: an
+/// object holding the wearer's heading and looming before LiDAR can see it. Diagnostics for the demo
+/// console; the soft cue this previews is wired in a later step.
+struct EarlyWarningBanner: View {
+    let flag: InterferenceFlag
+
+    var body: some View {
+        VStack {
+            HStack(spacing: 6) {
+                Image(systemName: "exclamationmark.triangle.fill")
+                Text(headline)
+                    .font(.caption.bold().monospaced())
+            }
+            .padding(.horizontal, 8)
+            .padding(.vertical, 4)
+            .background(tint, in: Capsule())
+            .foregroundStyle(.black)
+            .padding(.top, 8)
+            Spacer()
+        }
+    }
+
+    private var headline: String {
+        let ttc = flag.timeToContactSeconds.map { String(format: "%.1fs", $0) } ?? "--"
+        return "\(flag.label) ahead, \(ttc) (\(confidenceLabel))"
+    }
+
+    private var confidenceLabel: String {
+        switch flag.confidence {
+        case .low: return "low"
+        case .medium: return "med"
+        case .high: return "high"
+        }
+    }
+
+    private var tint: Color {
+        switch flag.confidence {
+        case .low: return .yellow
+        case .medium: return .orange
+        case .high: return .red
         }
     }
 }

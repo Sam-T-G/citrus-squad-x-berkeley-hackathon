@@ -1,10 +1,29 @@
 import Foundation
 
 /// What the avoidance layer wants the belt to do this tick.
-enum AvoidanceDirective: Sendable, Equatable {
+enum AvoidanceDirective: Sendable, Equatable, CustomStringConvertible {
     case clear                              // path ahead is open; navigation may proceed
     case steer(QuadrantMask, Double)        // move toward this side (the clearer one); distance in m
     case stop(Double)                       // boxed in or too close: halt and reorient; distance in m
+
+    /// Coarse identity for log dedup: the kind and side, ignoring the exact distance.
+    var stateKey: String {
+        switch self {
+        case .clear: return "clear"
+        case .steer(let mask, _): return mask.contains(.left) ? "steer-left" : "steer-right"
+        case .stop: return "stop"
+        }
+    }
+
+    var description: String {
+        switch self {
+        case .clear: return "clear"
+        case .steer(let mask, let distance):
+            let side = mask.contains(.left) ? "left" : (mask.contains(.right) ? "right" : "?")
+            return String(format: "steer %@ @%.2fm", side, distance)
+        case .stop(let distance): return String(format: "stop @%.2fm", distance)
+        }
+    }
 }
 
 /// The LiDAR obstacle-avoidance layer. It sits above navigation and below the camera person tier:
@@ -33,16 +52,18 @@ enum ObstacleAvoidance {
         // obstacle off to one side, with the path ahead open, is left to navigation.
         guard centerBlocked || danger else { return .clear }
 
-        let leftBlocked = isBlocked(left)
-        let rightBlocked = isBlocked(right)
+        // Steer toward the side with more room. The detection threshold is generous (it flags a wall
+        // a couple of meters off), so "this side has a return" is not enough to call it blocked; what
+        // matters is whether the side has room to pass through.
+        let escapeRight = clearance(right) >= clearance(left)
+        let escapeClearance = max(clearance(left), clearance(right))
 
-        // No way through: wall ahead on both sides, or hemmed in at danger range. Halt and reorient.
-        if leftBlocked && rightBlocked { return .stop(nearest) }
-
-        // Steer to the open side: away from a blocked side, otherwise toward the roomier one.
-        if leftBlocked { return .steer(.right, nearest) }
-        if rightBlocked { return .steer(.left, nearest) }
-        return clearance(right) >= clearance(left) ? .steer(.right, nearest) : .steer(.left, nearest)
+        // Stop only when the path ahead is blocked AND neither side has room to pass. Otherwise the
+        // wearer can keep moving, so steer them around toward the open side instead of freezing.
+        if centerBlocked && escapeClearance <= CitrusSquadConfig.avoidanceMinSideClearance {
+            return .stop(nearest)
+        }
+        return .steer(escapeRight ? .right : .left, nearest)
     }
 }
 
