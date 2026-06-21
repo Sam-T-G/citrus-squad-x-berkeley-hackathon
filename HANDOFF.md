@@ -76,3 +76,235 @@ These are the traps the design pass already found. Each has a fix in `docs/11`.
 ## Definition of done for the phone app
 
 M5 green: the replay demo drives the belt, every turn cue fires on the correct side across three clean walks, there are no strict-concurrency warnings, and the `LC2Packet`, `Bearing`, and `RouteEngine` tests pass.
+
+---
+
+# CV Layer Handoff
+
+Last updated: 2026-06-20
+
+## What this covers
+
+The Python computer vision layer for Citrus Squad. It ingests paired RGB + LiDAR depth frames streamed from the iPhone over a local WebSocket, runs YOLOv8n object detection, fuses each detection with its depth value, and broadcasts structured results to the haptic controller.
+
+This doc is the handoff between Cole (CV layer) and Sam (LiDAR + Swift + haptics layer).
+
+## Repo layout
+
+```
+server.py               start here to run the CV server
+cv/
+  __init__.py
+  detection.py          DepthFusedDetection dataclass + NAVIGATION_CLASSES filter list
+  pipeline.py           CVPipeline: transport-agnostic inference + depth fusion
+  ingest.py             FastAPI app with /frames WebSocket + binary frame parser
+  webcam_test.py        local smoke test -- runs the pipeline against the laptop webcam
+tests/
+  test_pipeline.py      12 unit tests for depth fusion logic
+  test_ingest.py         5 unit tests for wire protocol parsing
+requirements.txt
+```
+
+## Local webcam test
+
+Before the iPhone is in the loop, you can verify the detection pipeline end-to-end against the laptop webcam:
+
+```bash
+python3 -m cv.webcam_test        # built-in camera
+python3 -m cv.webcam_test 1      # external camera
+```
+
+Opens a live window with bounding boxes and prints each `DepthFusedDetection` dict to stdout. Depth values will read as a flat 2.0 m (no LiDAR on a laptop) -- that is expected. The important things to check are that boxes appear, labels are from the navigation class list, and `horizontal_norm` tracks objects left-to-right.
+
+macOS: grant camera access to Terminal.app or whichever terminal you use (System Settings > Privacy & Security > Camera). VS Code's integrated terminal may not get the prompt -- run from Terminal.app if the camera fails to open.
+
+Press `q` to quit the window.
+
+## Running the server
+
+```bash
+pip3 install -r requirements.txt
+python3 server.py
+# or
+uvicorn server:app --host 0.0.0.0 --port 8000
+```
+
+The server binds to `0.0.0.0:8000` so the iPhone and the haptic controller can both reach it over local Wi-Fi.
+
+## WebSocket endpoints
+
+### `/frames` (iPhone sender)
+
+The iPhone app sends binary messages in this format:
+
+```
+[8 bytes]   float64   unix timestamp (seconds)
+[4 bytes]   uint32    JPEG byte length N
+[N bytes]             JPEG-encoded RGB frame
+[4 bytes]   uint32    depth map rows H
+[4 bytes]   uint32    depth map cols W
+[H*W*4 bytes] float32  depth map, row-major, meters, NaN = no LiDAR return
+```
+
+Adjust the Swift sender to match this layout. The format is in `cv/ingest.py` (`_parse_frame`).
+
+### `/haptics` (haptic controller)
+
+Connect here to receive detection results. Each message is a JSON array sorted by closest obstacle first:
+
+```json
+[
+  {
+    "label": "person",
+    "confidence": 0.91,
+    "bbox_px": [312, 180, 540, 710],
+    "depth_median_m": 1.43,
+    "depth_min_m": 1.21,
+    "horizontal_norm": 0.66,
+    "timestamp_s": 1718000042.381
+  }
+]
+```
+
+| Field | Use |
+|---|---|
+| `depth_min_m` | Closest point of this obstacle. Drive haptic intensity from this. |
+| `horizontal_norm` | 0.0 = full left, 1.0 = full right. Maps to belt motor position. |
+| `label` | Optional: different buzz patterns per class (person vs. car). |
+| `timestamp_s` | Drop results older than ~150ms to avoid acting on stale data. |
+
+Empty array means no navigation-relevant obstacles this frame. No message is sent if there are no connected haptic clients.
+
+## How depth fusion works
+
+iPhone LiDAR depth maps are 256x192 at native resolution. RGB frames are 1280x720 or higher. The pipeline scales each YOLOv8 bounding box from RGB coordinates to depth coordinates, then samples the inner 50% of the scaled box (to avoid edge bleed where LiDAR returns cross object boundaries).
+
+`depth_min_m` is the minimum valid depth in that crop window. `depth_median_m` is more stable across frames. For haptic intensity (how hard to buzz), use `depth_min_m`. For smoothing/filtering, use `depth_median_m`.
+
+Zero and NaN depth values are both treated as missing (no LiDAR return). If the entire region is missing, both depth fields are `None`.
+
+## Navigation classes
+
+The model runs on all 80 COCO classes but only passes through classes relevant to pedestrian navigation. Current list in `cv/detection.py`:
+
+```
+person, bicycle, car, motorcycle, bus, truck,
+chair, couch, dining table, bed,
+stop sign, traffic light, fire hydrant,
+bench, potted plant, dog, cat, backpack, suitcase, umbrella
+```
+
+Add or remove from `NAVIGATION_CLASSES` in `detection.py` to tune for the demo environment.
+
+## Confidence threshold
+
+Set to `0.35` in `CVPipeline.__init__`. Lower = higher recall (fewer missed obstacles, more false positives). For a navigation safety use case, err low. Raise it if the haptic belt buzzes too often on demo day.
+
+## Model file
+
+`yolov8n.pt` is downloaded automatically by ultralytics on first run. For the CoreML path, run:
+
+```bash
+python3 -c "from ultralytics import YOLO; YOLO('yolov8n.pt').export(format='coreml')"
+```
+
+This outputs `yolov8n.mlpackage`. Drag it into the Xcode target.
+
+## Running tests
+
+```bash
+python3 -m pytest tests/ -v
+```
+
+All 17 tests pass. YOLO is mocked so no model download is needed to run tests.
+
+## What is built
+
+| File | Status | What it does |
+|---|---|---|
+| `cv/detection.py` | Done | `DepthFusedDetection` dataclass + `NAVIGATION_CLASSES` filter |
+| `cv/pipeline.py` | Done | YOLOv8n inference + LiDAR depth fusion |
+| `cv/ingest.py` | Done | FastAPI WebSocket server (`/frames` + `/haptics`) |
+| `cv/webcam_test.py` | Done | Local smoke test against laptop webcam |
+| `server.py` | Done | Uvicorn entry point |
+| `tests/` | Done | 17 unit tests, all passing |
+
+## Planned: on-device CoreML (no Wi-Fi)
+
+The Wi-Fi server is a working prototype. The demo target is everything running on the phone.
+
+**Steps:**
+
+1. Export the CoreML model:
+   ```bash
+   python3 -c "from ultralytics import YOLO; YOLO('yolov8n.pt').export(format='coreml')"
+   ```
+   Drag `yolov8n.mlpackage` into the Xcode target.
+
+2. **`ObjectDetectionService.swift`** (Sam's side) — new Swift service that:
+   - Subscribes to frames from `DepthService` via a callback (add `var onFrame: ((ARFrame) -> Void)?` to `DepthService`)
+   - Runs `VNCoreMLRequest` on `ARFrame.capturedImage`
+   - Scales each bounding box from RGB to depth map coordinates (same math as `pipeline.py _fuse`)
+   - Samples inner 50% of the scaled box
+   - Calls `VisionHazardSource.report()` with the nearest threat, `clear()` when nothing in path
+
+3. Wire into `AppModel` (Sam's side): add `let objectDetection = ObjectDetectionService()`, start/stop alongside `DepthService`.
+
+## Planned: collision prediction and action layer
+
+Pure logic on top of raw detections. Fully testable with no sensors.
+
+**New types:**
+
+```swift
+enum ThreatLevel { case none, advisory, warning, urgent }
+
+enum NavigationAction {
+    case clear
+    case stepLeft(paces: Int)
+    case stepRight(paces: Int)
+    case stop
+    case slowDown
+}
+
+struct ObstacleThreat {
+    var label: String
+    var distanceMeters: Double
+    var horizontalNorm: Double   // 0.0 = far left, 1.0 = far right
+    var level: ThreatLevel
+    var action: NavigationAction
+}
+```
+
+**Decision logic in `CollisionPredictor`:**
+
+1. Is it in path? `horizontal_norm` in `[0.35, 0.65]` = dead ahead
+2. How urgent? `< 1.5m` = urgent, `1.5–3m` = warning, `3–5m` = advisory
+3. Which side is clear? Check LiDAR band readings from `DepthService` for open space
+4. Paces to clear: `ceil(clearance_needed / 0.75)` where clearance = object half-width + 0.5m margin
+5. Output: belt tap direction + pace count for audio layer
+
+**Concrete example (pole at 2m, dead center):**
+```
+horizontal_norm = 0.51  → in path
+depth_min_m = 2.0       → warning
+label = "pole"          → static
+left LiDAR band: clear  → step left
+paces = ceil(0.54 / 0.75) = 1
+
+→ StepLeft(paces: 1)
+→ Belt: left tap
+→ Audio: "pole ahead, step left 1 pace"
+```
+
+## Open items
+
+- [ ] Implement `ObjectDetectionService.swift` (CoreML + ARKit frame subscription)
+- [ ] Implement `CollisionPredictor.swift` + `NavigationAction.swift` + `ThreatAssessment.swift`
+- [ ] Export `yolov8n.mlpackage` and add to Xcode target
+- [ ] Wire `ObjectDetectionService` into `AppModel`
+- [ ] Confirm ARFrame depth map resolution on iPhone 15 Pro Max (assumed 256x192)
+- [ ] Tune `confidence_threshold` on real footage (currently 0.35)
+- [ ] Tune `depth_crop_ratio` on real footage (currently 0.5)
+- [ ] Confirm wire format between Python server and iOS sender if Wi-Fi path is kept as fallback
+- [ ] Add keep-alive / ping-pong to the `/haptics` WebSocket if the controller idles
