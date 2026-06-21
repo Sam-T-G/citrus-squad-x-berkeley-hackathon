@@ -44,6 +44,10 @@ enum CitrusSquadConfig {
     static let dangerNearMeters = 0.5
     /// Lowest tap strength a graded hazard cue ever uses, so it is always felt.
     static let intensityFloor: UInt8 = 96
+    /// Minimum gap between spoken hazard re-announcements when an obstacle is creeping closer, so the
+    /// narration voices a worsening hazard again without repeating every tick. A fresh, changed cue
+    /// always speaks at once and ignores this.
+    static let narrationRefractorySeconds = 2.5
 
     // Vision person-in-path tier (docs/12 §6, mirrors the cv/ Python defaults)
     /// YOLO person-detection confidence floor. Cole's `cv/` default; err low, a missed person is

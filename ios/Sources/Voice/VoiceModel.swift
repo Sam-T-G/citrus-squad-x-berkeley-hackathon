@@ -26,6 +26,15 @@ final class VoiceModel {
     private(set) var lastTranscript = ""
     private(set) var lastReply = ""
 
+    /// True while the agent has the audio floor (connecting, listening, thinking, or speaking). The
+    /// automatic cue narration defers to it so the two voices do not talk over each other.
+    var isEngaged: Bool {
+        switch state {
+        case .connecting, .listening, .thinking, .speaking: return true
+        case .idle, .unavailable, .failed: return false
+        }
+    }
+
     /// Set by `AppModel`: run a command, return the line the agent should speak.
     var handler: VoiceSession.CommandHandler?
 
