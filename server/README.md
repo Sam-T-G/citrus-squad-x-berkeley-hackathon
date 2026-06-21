@@ -7,7 +7,7 @@ Phone --UDP (4 LC2 bytes)--> this server --USB serial (1 command word)--> Arduin
             (WebSocket /belt also accepted, for the test client and browser debug)
 ```
 
-The Arduino firmware it drives is [`arduino/belt.ino`](arduino/belt.ino) (Adafruit PCA9685 + a continuous-pulse state machine), which reads one newline-terminated word per cue: `forward`, `stop`, `left`, `right`, `rotate_left`, `rotate_right`, `idle`. Each word latches a pulse pattern that runs until the next command, so **`idle` is what stops the belt**. The server writes only when the command **changes** (so the 10 Hz heartbeat does not re-latch the same pattern) and sends `idle` automatically if the phone link goes silent, so a dropped link cannot leave the belt buzzing.
+The Arduino firmware it drives is [`arduino/belt.ino`](arduino/belt.ino) (Adafruit PCA9685 + a continuous-pulse state machine), which reads one newline-terminated word per cue: `forward`, `stop`, `left`, `right`, `rotate_left`, `rotate_right`, `u_turn`, `idle`, plus a finite `low_battery` alert. Each pulse word latches a pattern that runs until the next command, so **`idle` is what stops the belt**. The server writes only when the command **changes** (so the 10 Hz heartbeat does not re-latch the same pattern) and sends `idle` automatically if the phone link goes silent, so a dropped link cannot leave the belt buzzing.
 
 It runs with no hardware attached (mock mode), so the server can be built and tested before the Arduino is wired.
 
@@ -72,11 +72,11 @@ The WebSocket endpoint (`ws://<laptop-ip>:8080/belt`) stays available for the st
 - **In (WebSocket):** the 4 raw LC2 bytes per frame, `event, mask, intensity, seq`, exactly what the phone already builds. A JSON text frame `{"event":33,"mask":4,"intensity":192,"seq":0}` also works, for debugging.
 - **Out (serial):** one newline-terminated word per cue change, mapped by `lc2_to_command`:
   - `left` / `right` / `forward` for a directional turn (mask bit Left `0x02`, Right `0x04`, Front `0x01`)
-  - `rotate_left` for a U-turn / reorient (event `0x22`; the mask is both sides, so a side is chosen)
+  - `u_turn` for a U-turn (event `0x22`)
   - `stop` for a hazard, obstacle, or arrived cue (the all-servo buzz)
   - `idle` for an idle cue, and automatically on link silence (this is what stops the belt)
 
-  Intensity, sequence, and any far-left/far-right distinction do not survive this mapping. The Arduino path is the coarse fallback; the ESP32 path (`firmware/`) keeps the full LC2 frame over UDP.
+  Intensity, sequence, and any far-left/far-right distinction do not survive this mapping. The firmware also has `rotate_left`/`rotate_right` and a finite `low_battery` alert, but no LC2 event maps to those yet (manual/firmware test only). The Arduino path is the coarse fallback; the ESP32 path (`firmware/`) keeps the full LC2 frame over UDP.
 
 ## Config (env vars)
 

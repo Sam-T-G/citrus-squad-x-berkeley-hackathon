@@ -8,7 +8,7 @@ forwarder plus a health dashboard.
 This is the no-ESP32 / no-Wi-Fi path: the laptop hosts the link and tethers to
 the Arduino over USB. The firmware it drives is `server/arduino/belt.ino`, which
 reads ONE newline-terminated word per cue:
-  forward | stop | left | right | rotate_left | rotate_right | idle
+  forward | stop | left | right | rotate_left | rotate_right | u_turn | idle
 Each word latches a continuous pulse pattern that runs until the next command, so
 `idle` is what stops the belt. This server translates each LC2 cue to a word (see
 `lc2_to_command`), writes only when the command CHANGES (so the heartbeat does not
@@ -107,11 +107,14 @@ def lc2_to_command(lc2: bytes) -> bytes:
 
       - idle (0x00)                  -> b"idle\\n"          (stops the belt; must be sent)
       - vision/obstacle (0x10/0x40)  -> b"stop\\n"          (all-servo hazard buzz)
-      - turn-around (0x22)           -> b"rotate_left\\n"   (in-place reorient; mask is both
-                                                            sides, so pick one)
+      - turn-around (0x22)           -> b"u_turn\\n"        (dedicated U-turn pattern)
       - arrived (0x23)               -> b"stop\\n"          (no arrival pattern; a buzz reads
                                                             as "you're here")
       - directional turns, by mask   -> b"left\\n" / b"right\\n" / b"forward\\n"
+
+    Angelo's firmware also has `rotate_left`/`rotate_right` (in-place reorient) and
+    `low_battery` (a finite alert). No LC2 event maps to those today, so they stay for
+    manual/firmware testing.
     """
     event, mask = lc2[0], lc2[1]
     if event == EV_IDLE:
@@ -119,7 +122,7 @@ def lc2_to_command(lc2: bytes) -> bytes:
     if event in (EV_VISION, EV_OBSTACLE, EV_ARRIVED):
         return b"stop\n"
     if event == EV_TURN_AROUND:
-        return b"rotate_left\n"
+        return b"u_turn\n"
     if event == EV_FORWARD:
         return b"forward\n"
     if mask & MASK_LEFT:
@@ -348,7 +351,7 @@ DASHBOARD_HTML = """<!doctype html><html><head><meta charset=utf-8>
  <button onclick="fire(0x21,0x02)">left</button>
  <button onclick="fire(0x21,0x04)">right</button>
  <button onclick="fire(0x20,0x01)">forward</button>
- <button onclick="fire(0x22,0x06)">rotate (U-turn)</button>
+ <button onclick="fire(0x22,0x06)">u_turn</button>
  <button onclick="fire(0x10,0x06)">stop (hazard)</button>
  <button onclick="fire(0x00,0x00)">idle</button>
 </p>
