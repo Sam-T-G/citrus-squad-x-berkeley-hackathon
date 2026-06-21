@@ -14,12 +14,22 @@ settings:
     SWIFT_VERSION: "6.0"
     CODE_SIGN_STYLE: Automatic
     SWIFT_STRICT_CONCURRENCY: complete
+# Google Maps SDK for iOS. SPM is the supported install path (CocoaPods is deprecated).
+# Rendering a native map and the my-location dot is free; only the Directions web call is billed,
+# and that path stays governed in DirectionsService. See ios/README.md "Cost control".
+packages:
+  GoogleMaps:
+    url: https://github.com/googlemaps/ios-maps-sdk
+    from: "9.0.0"
 targets:
   CitrusSquad:
     type: application
     platform: iOS
     sources:
       - path: Sources
+    dependencies:
+      - package: GoogleMaps
+        product: GoogleMaps
     info:
       path: Sources/Info.plist
       properties:

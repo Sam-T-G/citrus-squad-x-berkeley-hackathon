@@ -50,7 +50,10 @@ struct DirectionsClient {
         guard decoded.status == "OK",
               let leg = decoded.routes.first?.legs.first,
               let firstStep = leg.steps.first else {
-            throw DirectionsError.noRoute(decoded.status)
+            // Google ships a human-readable reason in error_message on a denial. Surface it so a key
+            // or enablement problem reads as itself instead of a bare status code.
+            let detail = decoded.errorMessage.map { ": \($0)" } ?? ""
+            throw DirectionsError.noRoute(decoded.status + detail)
         }
 
         var waypoints: [GeoPoint] = [firstStep.startLocation.geoPoint]
@@ -65,6 +68,13 @@ struct DirectionsClient {
 private struct DirectionsResponse: Decodable {
     let status: String
     let routes: [Route]
+    let errorMessage: String?
+
+    enum CodingKeys: String, CodingKey {
+        case status
+        case routes
+        case errorMessage = "error_message"
+    }
 
     struct Route: Decodable { let legs: [Leg] }
     struct Leg: Decodable { let steps: [Step] }

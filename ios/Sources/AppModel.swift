@@ -44,9 +44,14 @@ final class AppModel {
     private(set) var routeStatus = "no route loaded"
     private(set) var resolved: ResolvedCue = .idle
 
-    /// Maps Directions API key. Entered in the app, kept in UserDefaults, never committed.
+    /// Google Maps API key. One key serves both the rendered map (free) and the Directions web call
+    /// (the one billed path). Entered in the app, kept in UserDefaults, never committed. Setting it
+    /// also hands it to the Maps SDK so the live map can load without a relaunch.
     var directionsAPIKey: String = UserDefaults.standard.string(forKey: "citrussquad.gmapsKey") ?? "" {
-        didSet { UserDefaults.standard.set(directionsAPIKey, forKey: "citrussquad.gmapsKey") }
+        didSet {
+            UserDefaults.standard.set(directionsAPIKey, forKey: "citrussquad.gmapsKey")
+            MapsBootstrap.provideKeyIfNeeded(directionsAPIKey)
+        }
     }
 
     enum DriveMode: String, CaseIterable, Sendable { case bench, simulate }
@@ -142,6 +147,17 @@ final class AppModel {
             }
             directionsUsage = await directions.usage()
         }
+    }
+
+    /// Set the destination from a coordinate the operator tapped on the map. No geocoding is called,
+    /// so this is free. When the origin is empty and there is a GPS fix, seed it from the live
+    /// position so a route can be fetched in one tap.
+    func setDestinationFromTap(_ point: GeoPoint) {
+        destinationText = String(format: "%.6f,%.6f", point.latitude, point.longitude)
+        if originText.isEmpty, let live = location.location {
+            originText = String(format: "%.6f,%.6f", live.coordinate.latitude, live.coordinate.longitude)
+        }
+        routeStatus = "destination set — tap Fetch to route"
     }
 
     /// Drop the cached routes. The next fetch for a route will hit the network once.

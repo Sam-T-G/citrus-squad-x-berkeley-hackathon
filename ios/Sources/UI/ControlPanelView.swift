@@ -135,10 +135,13 @@ struct ControlPanelView: View {
             }
 
             DisclosureGroup("Live Google Maps") {
-                SecureField("Directions API key", text: apiKey)
+                SecureField("Google Maps API key", text: apiKey)
                     .textFieldStyle(.roundedBorder)
                     .autocorrectionDisabled()
                     .textInputAutocapitalization(.never)
+                Text("One key powers both the live map (free) and route fetches (billed, capped). Changing it after the map has loaded needs an app relaunch.")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
                 TextField("origin lat,lng", text: origin)
                     .textFieldStyle(.roundedBorder)
                     .autocorrectionDisabled()

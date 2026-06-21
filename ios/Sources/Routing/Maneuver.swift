@@ -45,6 +45,35 @@ enum RouteMath {
         return result
     }
 
+    /// Meters left to walk from `position` to the end of the route, following the waypoints from
+    /// `segmentIndex` onward. The leg the wearer is on is measured from the live position to the
+    /// next waypoint; full legs after that are summed. Pure geometry, no network, so the nav overlay
+    /// can show progress for free. Returns 0 once the last waypoint is reached.
+    static func remainingDistance(from position: GeoPoint,
+                                  along waypoints: [GeoPoint],
+                                  segmentIndex: Int) -> Double {
+        guard waypoints.count >= 2, segmentIndex >= 0, segmentIndex + 1 < waypoints.count else {
+            return 0
+        }
+        var total = Bearing.distance(from: position.coordinate,
+                                     to: waypoints[segmentIndex + 1].coordinate)
+        var index = segmentIndex + 1
+        while index + 1 < waypoints.count {
+            total += Bearing.distance(from: waypoints[index].coordinate,
+                                      to: waypoints[index + 1].coordinate)
+            index += 1
+        }
+        return total
+    }
+
+    /// Rough walking ETA in seconds for a remaining distance, at the configured walking speed.
+    /// Local arithmetic, never a Maps call. Returns 0 for a non-positive speed or distance.
+    static func walkingETASeconds(forDistance meters: Double,
+                                  speedMetersPerSecond: Double = CitrusSquadConfig.walkingSpeed) -> Double {
+        guard meters > 0, speedMetersPerSecond > 0 else { return 0 }
+        return meters / speedMetersPerSecond
+    }
+
     /// A short L-shaped demo route, roughly a 30 m walk: head north, then turn east. Lets the
     /// simulator and the belt run with no API key and no GPS. Coordinates are arbitrary open space.
     static let demoRoute: [GeoPoint] = [

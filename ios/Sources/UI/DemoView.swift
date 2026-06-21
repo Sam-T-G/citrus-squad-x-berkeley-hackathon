@@ -15,7 +15,7 @@ struct DemoView: View {
             VStack(spacing: 16) {
                 cueStrip
                 beltPanel
-                MapPanel(model: model)
+                MapSection(model: model)
                 CameraPanel(camera: model.camera, detections: model.detections)
                 DepthPanel(model: model)
             }
