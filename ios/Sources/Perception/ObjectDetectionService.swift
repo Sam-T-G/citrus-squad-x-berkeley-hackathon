@@ -41,7 +41,20 @@ final class ObjectDetectionService {
     private(set) var movingObjects: [TrackedObject] = []
     private(set) var isLogging = false
     private(set) var lastLogURL: URL?
+    private(set) var uploadStatus: UploadStatus = .idle
     private(set) var lastError: String?
+
+    var githubToken: String {
+        get { UserDefaults.standard.string(forKey: "cv.githubToken") ?? "" }
+        set { UserDefaults.standard.set(newValue, forKey: "cv.githubToken") }
+    }
+
+    enum UploadStatus: Equatable {
+        case idle
+        case uploading
+        case done(url: String)
+        case failed(String)
+    }
 
     // All properties below are accessed only on ARKit's serial callback queue.
     // Same isolation pattern as DepthService.frameTick.
@@ -86,6 +99,20 @@ final class ObjectDetectionService {
         let url = cvLogger.stop()
         isLogging = false
         lastLogURL = url
+        guard let url else { return }
+        let token = githubToken
+        guard !token.isEmpty else { return }
+        uploadStatus = .uploading
+        Task {
+            do {
+                let htmlURL = try await GitHubLogUploader.upload(fileURL: url, token: token)
+                uploadStatus = .done(url: htmlURL)
+                log.info("CV log uploaded: \(htmlURL, privacy: .public)")
+            } catch {
+                uploadStatus = .failed(error.localizedDescription)
+                log.error("CV log upload failed: \(error.localizedDescription, privacy: .public)")
+            }
+        }
     }
 
     // MARK: - Model loading
