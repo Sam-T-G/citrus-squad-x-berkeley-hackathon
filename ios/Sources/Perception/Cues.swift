@@ -13,6 +13,9 @@ struct Hazard: Sendable, Equatable {
     var mask: QuadrantMask
     /// Distance in meters if known, used for intensity grading. -1 if unknown.
     var distanceMeters: Double = -1
+    /// The detected object class for a vision hazard (`person`, `backpack`, `bed`, ...), when the
+    /// detector knows it. Drives what the demo and the spoken tier say; nil for a raw LiDAR obstacle.
+    var label: String? = nil
 
     var event: LC2Event {
         switch kind {
@@ -20,6 +23,11 @@ struct Hazard: Sendable, Equatable {
         case .person: return .visionDanger
         }
     }
+
+    /// True only when the detector actually recognized a person, not just any in-path object. The
+    /// vision tier fires the same belt cue for any close navigation-class object, so the wire event
+    /// stays `visionDanger`; this only governs whether the demo and voice say "person."
+    var isPerson: Bool { label?.lowercased() == "person" }
 }
 
 /// Anything that can report the current hazard, polled once per tick by `AppModel`.
@@ -42,6 +50,10 @@ struct ResolvedCue: Sendable, Equatable {
     var mask: QuadrantMask
     var intensity: UInt8
     var source: Source
+    /// The detected object class behind a vision hazard, carried so the demo and the spoken tier can
+    /// name what is ahead ("person", "backpack", ...) instead of always saying "person". Nil for turn,
+    /// LiDAR, idle, and early-warning cues.
+    var label: String? = nil
 
     static let idle = ResolvedCue(event: .idle, mask: [], intensity: 0, source: .idle)
 

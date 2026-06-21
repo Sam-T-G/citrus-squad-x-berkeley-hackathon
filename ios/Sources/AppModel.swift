@@ -371,8 +371,16 @@ final class AppModel {
         let distance = hazard.distanceMeters > 0
             ? "about \(Int(hazard.distanceMeters.rounded())) meters"
             : "close"
-        let what = hazard.kind == .person ? "a person" : "something"
-        return "Caution, \(what) \(distance) \(side)."
+        return "Caution, \(Self.spokenObject(for: hazard)) \(distance) \(side)."
+    }
+
+    /// Name what is ahead for the spoken tier: a person only when the detector saw one, the object
+    /// class when it knows it ("a backpack", "an umbrella"), or a neutral fallback otherwise.
+    static func spokenObject(for hazard: Hazard) -> String {
+        if hazard.isPerson { return "a person" }
+        guard let label = hazard.label, !label.isEmpty else { return "something" }
+        let vowel = "aeiou".contains(label.lowercased().first ?? " ")
+        return "\(vowel ? "an" : "a") \(label)"
     }
 
     // MARK: - Decide loop
@@ -412,7 +420,8 @@ final class AppModel {
             decided = ResolvedCue(event: person.event,
                                   mask: person.mask,
                                   intensity: ResolvedCue.intensity(forDistance: person.distanceMeters),
-                                  source: .hazard)
+                                  source: .hazard,
+                                  label: person.label)
         } else if let avoidance {
             decided = avoidance
         } else if let earlyWarning {

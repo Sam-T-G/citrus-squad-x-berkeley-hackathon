@@ -45,7 +45,12 @@ final class AudioCueSink: CueSink {
         case .turnAround: return "turn around"
         case .arrived: return "arrived"
         case .obstacleNear: return "obstacle behind"
-        case .visionDanger: return "person near"
+        case .visionDanger:
+            // Say "person" only when the detector saw one; otherwise name the object, or a neutral
+            // "obstruction" when the class is unknown.
+            if cue.label?.lowercased() == "person" { return "person near" }
+            if let label = cue.label, !label.isEmpty { return "\(label) ahead" }
+            return "obstruction ahead"
         case .idle: return nil
         }
     }

@@ -1,21 +1,29 @@
 """Citrus Squad belt bridge server.
 
 Accepts the phone's LC2 cue stream over a WebSocket and forwards each cue to the
-Arduino Uno over one long-lived USB serial connection. The phone keeps doing all
-the arbitration and the 100 ms heartbeat; this process is a thin, low-latency
+Arduino over one long-lived USB serial connection. The phone keeps doing all the
+arbitration and the 100 ms heartbeat; this process is a thin, low-latency
 forwarder plus a health dashboard.
 
+This is the no-ESP32 / no-Wi-Fi path: the laptop hosts the link and tethers to
+the Arduino over USB. The firmware it drives is `server/arduino/belt.ino`, which
+reads ONE ASCII command byte per cue:
+  's' stop/hazard   'l' turn left   'r' turn right   'f' go straight
+So this server translates each LC2 cue down to that single byte (see
+`lc2_to_command`) and only writes when the command CHANGES, so the firmware's
+one-shot patterns are not re-triggered by the 10 Hz heartbeat.
+
 Wire in:  4 raw LC2 bytes per WebSocket frame  ->  event, mask, intensity, seq
-Wire out: 6 framed bytes per serial write       ->  0xA5, event, mask, intensity, seq, checksum
+Wire out: 1 ASCII command byte per cue change   ->  b's' / b'l' / b'r' / b'f'
 
 Run:  uvicorn app:app --host 0.0.0.0 --port 8080
       (or `python app.py`, which starts uvicorn for you)
 
 Config via env:
   SERIAL_PORT   serial device, e.g. /dev/tty.usbmodem1101. Unset = auto-detect, then mock.
-  SERIAL_BAUD   default 115200 (the Uno bootloader expects this)
+  SERIAL_BAUD   default 9600 (matches Serial.begin(9600) in belt.ino)
   PORT          HTTP/WebSocket port, default 8080
-  WARMUP_S      seconds to wait after opening serial, for the Uno auto-reset, default 2.0
+  WARMUP_S      seconds to wait after opening serial, for the Arduino auto-reset, default 2.0
 
 See docs/15-belt-server-bridge-plan.md for the why behind every choice here.
 """
@@ -39,10 +47,24 @@ except ImportError:  # the app still runs in mock mode without these
     aioserial = None
     list_ports = None
 
-SERIAL_BAUD = int(os.environ.get("SERIAL_BAUD", "115200"))
+SERIAL_BAUD = int(os.environ.get("SERIAL_BAUD", "9600"))
 HTTP_PORT = int(os.environ.get("PORT", "8080"))
 WARMUP_S = float(os.environ.get("WARMUP_S", "2.0"))
-SYNC_BYTE = 0xA5
+
+# LC2 event codes (docs/03-protocol.md).
+EV_IDLE = 0x00
+EV_VISION = 0x10        # vision-danger
+EV_TURN_SLIGHT = 0x20
+EV_TURN_NOW = 0x21
+EV_TURN_AROUND = 0x22
+EV_ARRIVED = 0x23
+EV_OBSTACLE = 0x40      # obstacle-near (LiDAR)
+
+# Quadrant mask bits, cardinal layout (matches belt.ino and the iOS QuadrantMask).
+MASK_FRONT = 0x01
+MASK_LEFT = 0x02
+MASK_RIGHT = 0x04
+MASK_BACK = 0x08
 
 
 def autodetect_port() -> str | None:
@@ -59,10 +81,33 @@ def autodetect_port() -> str | None:
     return None
 
 
-def serial_frame(lc2: bytes) -> bytes:
-    """Wrap the 4 LC2 bytes for the serial link: sync byte + payload + XOR checksum."""
-    e, m, i, s = lc2[0], lc2[1], lc2[2], lc2[3]
-    return bytes([SYNC_BYTE, e, m, i, s, e ^ m ^ i ^ s])
+def lc2_to_command(lc2: bytes) -> bytes | None:
+    """Translate a 4-byte LC2 cue to the single ASCII byte belt.ino understands, or
+    None for "send nothing" (the belt falls quiet on its own).
+
+    The firmware has four patterns: stop/hazard buzz, and a double-tap on left, right,
+    or front. Intensity, sequence, and the far-left/far-right distinction do not survive
+    this mapping; the Arduino path is the coarse fallback, the ESP32 path keeps full LC2.
+
+      - idle (0x00)                        -> None
+      - hazards + U-turn (0x10/0x40/0x22)  -> b's' (stop/alert buzz)
+      - arrived (0x23)                     -> b's' (no sweep pattern on this firmware)
+      - directional turns, by mask side    -> b'l' / b'r' / b'f'
+    """
+    event, mask = lc2[0], lc2[1]
+    if event == EV_IDLE:
+        return None
+    if event in (EV_VISION, EV_OBSTACLE, EV_TURN_AROUND, EV_ARRIVED):
+        return b"s"
+    if mask & MASK_LEFT:
+        return b"l"
+    if mask & MASK_RIGHT:
+        return b"r"
+    if mask & MASK_FRONT:
+        return b"f"
+    if mask & MASK_BACK:
+        return b"s"      # no dedicated back pattern; treat as an alert
+    return None
 
 
 def parse_inbound(message: dict) -> bytes | None:
@@ -101,6 +146,9 @@ class Hub:
         self.frames_out = 0
         self.last_frame_ts = 0.0
         self.last_lc2 = b""
+        # Last command actually written, so a repeated cue (the 10 Hz heartbeat restages
+        # the same one) is not re-sent and the firmware's one-shot pattern fires once.
+        self.last_cmd: bytes | None = None
 
     def submit(self, lc2: bytes) -> None:
         self.frames_in += 1
@@ -112,26 +160,43 @@ class Hub:
         with suppress(asyncio.QueueFull):
             self.latest.put_nowait(lc2)
 
+    def next_command(self, lc2: bytes) -> bytes | None:
+        """Map a cue to its command and suppress repeats. Idle resets the latch so the
+        next same-direction cue fires again (turn-left, idle, turn-left = two taps)."""
+        cmd = lc2_to_command(lc2)
+        if cmd is None:
+            self.last_cmd = None
+            return None
+        if cmd == self.last_cmd:
+            return None
+        self.last_cmd = cmd
+        return cmd
+
     async def writer(self) -> None:
         if self.mock:
             print(f"[serial] MOCK mode (no Arduino). Set SERIAL_PORT to a real device. baud={SERIAL_BAUD}")
             while True:
-                lc2 = await self.latest.get()
+                cmd = self.next_command(await self.latest.get())
+                if cmd is None:
+                    continue
                 self.frames_out += 1
-                print(f"[mock-serial] -> {serial_frame(lc2).hex(' ')}")
+                print(f"[mock-serial] -> {cmd.decode()}")
             return
 
         backoff = 1.0
         while True:
             try:
                 ser = aioserial.AioSerial(port=self.port, baudrate=SERIAL_BAUD)
-                print(f"[serial] opened {self.port} @ {SERIAL_BAUD}; warming up {WARMUP_S}s for Uno auto-reset")
-                await asyncio.sleep(WARMUP_S)  # the Uno reboots when the port opens
+                print(f"[serial] opened {self.port} @ {SERIAL_BAUD}; warming up {WARMUP_S}s for Arduino auto-reset")
+                await asyncio.sleep(WARMUP_S)  # the Arduino reboots when the port opens
                 self.serial_open = True
+                self.last_cmd = None  # fresh link: do not assume the board's prior state
                 backoff = 1.0
                 while True:
-                    lc2 = await self.latest.get()
-                    await ser.write_async(serial_frame(lc2))
+                    cmd = self.next_command(await self.latest.get())
+                    if cmd is None:
+                        continue
+                    await ser.write_async(cmd)
                     self.frames_out += 1
             except Exception as exc:  # cable yanked, device gone, etc.
                 self.serial_open = False
@@ -197,6 +262,7 @@ async def health() -> JSONResponse:
         "frames_out": hub.frames_out,
         "last_frame_age_s": age,
         "last_lc2_hex": hub.last_lc2.hex(" ") if hub.last_lc2 else None,
+        "last_cmd": hub.last_cmd.decode() if hub.last_cmd else None,
     })
 
 
@@ -206,7 +272,8 @@ async def test(event: int = 0x21, mask: int = 0x04, intensity: int = 192, seq: i
     Default is turn-now on the Right quadrant. Try /test?event=16&mask=6 for a hazard."""
     lc2 = bytes([event & 0xFF, mask & 0xFF, intensity & 0xFF, seq & 0xFF])
     hub.submit(lc2)
-    return {"sent_lc2_hex": lc2.hex(" "), "serial_frame_hex": serial_frame(lc2).hex(" ")}
+    cmd = lc2_to_command(lc2)
+    return {"sent_lc2_hex": lc2.hex(" "), "command": cmd.decode() if cmd else None}
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -225,13 +292,14 @@ DASHBOARD_HTML = """<!doctype html><html><head><meta charset=utf-8>
 <h1>Citrus Squad belt bridge</h1>
 <div id=board></div>
 <p>
- <button onclick="fire(0x20,0x04)">turn-slight R</button>
- <button onclick="fire(0x21,0x08)">turn-now FarR</button>
- <button onclick="fire(0x10,0x06)">hazard center</button>
+ <button onclick="fire(0x21,0x02)">turn left (l)</button>
+ <button onclick="fire(0x21,0x04)">turn right (r)</button>
+ <button onclick="fire(0x20,0x01)">straight (f)</button>
+ <button onclick="fire(0x10,0x06)">hazard (s)</button>
  <button onclick="fire(0x00,0x00)">idle</button>
 </p>
 <script>
- const F=['mock','port','serial_open','ws_clients','frames_in','frames_out','last_frame_age_s','last_lc2_hex'];
+ const F=['mock','port','serial_open','ws_clients','frames_in','frames_out','last_frame_age_s','last_lc2_hex','last_cmd'];
  async function tick(){
    const h=await (await fetch('/health')).json();
    board.innerHTML=F.map(k=>{

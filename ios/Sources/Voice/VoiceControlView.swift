@@ -15,7 +15,8 @@ struct VoiceControlView: View {
         }
         .onChange(of: voice.state) { _, newState in
             switch newState {
-            case .listening: Feedback.voiceListening()
+            case .connecting: Feedback.voiceActivating()
+            case .listening: Feedback.voiceReady()
             case .thinking: Feedback.voiceProcessing()
             default: break
             }
