@@ -89,14 +89,21 @@ struct AvoidanceFilter: Sendable {
             settleCount = 0
             clearCount += 1
             if clearCount >= holdTicks { emitted = .clear }
-        case .steer:
+        case .steer(let mask, _):
             clearCount = 0
-            settleCount += 1
-            switch emitted {
-            case .clear, .stop:
-                if settleCount >= settleTicks { emitted = raw }   // activate after it settles
-            case .steer:
-                break                                             // sticky: keep the chosen side
+            if case .steer(let currentMask, _) = emitted, currentMask == mask {
+                // Same side already active: refresh the distance and hold.
+                emitted = raw
+                settleCount = 0
+            } else {
+                // Activating, or switching to the other side. Require the new side to persist a few
+                // ticks so band noise does not whip the wearer back and forth, but do let it switch
+                // dynamically once the reading is consistent.
+                settleCount += 1
+                if settleCount >= settleTicks {
+                    emitted = raw
+                    settleCount = 0
+                }
             }
         }
         return emitted

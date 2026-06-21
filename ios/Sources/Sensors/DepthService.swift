@@ -185,9 +185,10 @@ extension DepthService: ARSessionDelegate {
         Task { @MainActor in self.lastError = message }
     }
 
-    /// Nearest valid depth in each third of the frame. Samples a horizontal strip biased slightly
-    /// above center, which favors torso and head-height objects and mostly dodges the floor that a
-    /// chest-mounted phone tilts toward. Depth is `kCVPixelFormatType_DepthFloat32`, in meters.
+    /// Nearest valid depth in the scene's left, center, and right thirds. The buffer is the camera's
+    /// native landscape orientation, so in portrait the scene's left-right runs along the rows: this
+    /// splits the rows into three bands and scans an upper-middle column strip, favoring torso height
+    /// and dodging the floor. Depth is `kCVPixelFormatType_DepthFloat32`, in meters.
     nonisolated static func bandedNearest(in depthMap: CVPixelBuffer) -> BandDepths {
         CVPixelBufferLockBaseAddress(depthMap, .readOnly)
         defer { CVPixelBufferUnlockBaseAddress(depthMap, .readOnly) }
@@ -198,17 +199,22 @@ extension DepthService: ARSessionDelegate {
         let rowBytes = CVPixelBufferGetBytesPerRow(depthMap)
         guard width >= 3, height >= 3 else { return BandDepths() }
 
-        let yStart = Int(Double(height) * 0.30)
-        let yEnd = Int(Double(height) * 0.55)
-        let third = width / 3
+        // The depth buffer is the camera's native landscape orientation. In portrait (.right) the
+        // scene's left-right runs along the buffer's HEIGHT (rows) and its up-down along the WIDTH
+        // (columns) — so to read left/center/right of what the wearer faces, split the ROWS into three
+        // bands and scan an upper-middle COLUMN strip to favor torso/obstacle height and dodge the
+        // floor. For .right, row 0 is the scene's right edge, so band 0 is right and band 2 is left.
+        let colStart = Int(Double(width) * 0.30)
+        let colEnd = Int(Double(width) * 0.55)
+        let bandRows = height / 3
 
         var smallest: [Float] = [.greatestFiniteMagnitude, .greatestFiniteMagnitude, .greatestFiniteMagnitude]
-        for y in yStart..<yEnd {
+        for y in 0..<height {
+            let band = y < bandRows ? 0 : (y < 2 * bandRows ? 1 : 2)
             let row = base.advanced(by: y * rowBytes).assumingMemoryBound(to: Float32.self)
-            for x in 0..<width {
+            for x in colStart..<colEnd {
                 let value = row[x]
                 guard value > 0 else { continue }
-                let band = x < third ? 0 : (x < 2 * third ? 1 : 2)
                 if value < smallest[band] { smallest[band] = value }
             }
         }
@@ -216,7 +222,8 @@ extension DepthService: ARSessionDelegate {
         func meters(_ value: Float) -> Double {
             value == .greatestFiniteMagnitude ? -1 : Double(value)
         }
-        return BandDepths(left: meters(smallest[0]), center: meters(smallest[1]), right: meters(smallest[2]))
+        // band 0 = scene right, band 2 = scene left. If a live test shows them mirrored, swap these.
+        return BandDepths(left: meters(smallest[2]), center: meters(smallest[1]), right: meters(smallest[0]))
     }
 
     /// A downscaled, upright CGImage from the AR frame's RGB buffer for the demo preview. Oriented

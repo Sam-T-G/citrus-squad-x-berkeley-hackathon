@@ -17,11 +17,15 @@ final class AudioCueSink: CueSink {
 
     private let synthesizer = AVSpeechSynthesizer()
     private var lastSpoken: LC2Event = .idle
+    private var lastSource: ResolvedCue.Source = .idle
 
     func emit(_ cue: ResolvedCue) {
-        guard isEnabled else { lastSpoken = cue.event; return }
-        guard cue.event != lastSpoken else { return }
+        guard isEnabled else { lastSpoken = cue.event; lastSource = cue.source; return }
+        // Re-speak on a change of cue or its source, so a soft early-warning and a confirmed cue that
+        // share the vision-danger wire event are still announced distinctly.
+        guard cue.event != lastSpoken || cue.source != lastSource else { return }
         lastSpoken = cue.event
+        lastSource = cue.source
         guard cue.event != .idle, let phrase = phrase(for: cue) else { return }
 
         let utterance = AVSpeechUtterance(string: phrase)
@@ -31,6 +35,9 @@ final class AudioCueSink: CueSink {
 
     /// Map a cue to spoken words. Placeholder vocabulary; this is the part Josh designs.
     private func phrase(for cue: ResolvedCue) -> String? {
+        // The early-warning tier rides the vision-danger event but is a soft advisory, not a confirmed
+        // person, so it speaks its own line. Object-specific phrasing is the Claude advisor's job later.
+        if cue.source == .earlyWarning { return "caution, something ahead" }
         switch cue.event {
         case .forward: return "forward"
         case .turnSlight: return cue.mask.contains(.right) ? "slight right" : "slight left"

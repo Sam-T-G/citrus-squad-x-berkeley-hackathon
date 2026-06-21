@@ -47,6 +47,19 @@ enum CitrusSquadConfig {
     static let visionHysteresisMeters = 0.3
     /// Minimum time between cue fire-or-clear transitions.
     static let visionRefractorySeconds = 1.0
+    /// COCO classes the vision tier treats as in-path hazards. Kept in lockstep with
+    /// `NAVIGATION_CLASSES` in `cv/detection.py` so the on-device filter and Cole's proven Python
+    /// pipeline recognize the same things. The label is the only thing that varies by class: the
+    /// gate, depth fusion, and intensity math downstream key on distance and side, not on identity,
+    /// so widening this set never changes the safety behavior, only what the overlay, the
+    /// diagnostics console, and the spoken tier can name. COCO-native candidates not yet enabled
+    /// here (add to both lists together): `handbag`, `train`.
+    static let visionNavigationClasses: Set<String> = [
+        "person", "bicycle", "car", "motorcycle", "bus", "truck",
+        "chair", "couch", "dining table", "bed",
+        "stop sign", "traffic light", "fire hydrant", "parking meter", "bench", "potted plant",
+        "dog", "cat", "backpack", "suitcase", "umbrella",
+    ]
 
     // Obstacle avoidance (LiDAR safety layer, sits above navigation, below the person tier)
     /// Consecutive 10 Hz ticks an obstacle must persist before the avoidance cue activates.
@@ -75,4 +88,15 @@ enum CitrusSquadConfig {
     /// Off-path distance past which guidance steers back toward the line (and a reroute belongs).
     /// Reuses the existing reroute deviation budget.
     static let onPathToleranceMeters = rerouteDeviationMeters
+
+    // Heading resolution (live walk). The belt's motors are magnets right next to the phone, so GPS
+    // course over ground is preferred over the magnetometer while moving. See `HeadingResolver`.
+    /// Minimum ground speed (m/s) before GPS course is trusted as the body heading. Normal walking
+    /// stays above this; standing or shuffling drops below it and the compass takes over.
+    static let courseMinSpeedMetersPerSecond = 0.5
+    /// Reject GPS course readings worse than this (degrees). Negative course accuracy is treated as
+    /// "unknown" and the speed gate decides.
+    static let courseMaxAccuracyDegrees = 30.0
+    /// Reject magnetometer readings worse than this (degrees). The belt can push the compass past it.
+    static let headingMaxAccuracyDegrees = 25.0
 }

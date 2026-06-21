@@ -18,6 +18,12 @@ struct ProductionView: View {
             controls
         }
         .padding()
+        .background {
+            // Hardware volume buttons trigger a voice turn, so the wearer can talk by feel.
+            VolumeButtonTriggerView { Task { await model.voice.toggle() } }
+                .frame(width: 1, height: 1)
+                .allowsHitTesting(false)
+        }
         .overlay {
             Color.green
                 .opacity(flash ? 0.4 : 0)
@@ -25,7 +31,7 @@ struct ProductionView: View {
                 .allowsHitTesting(false)
         }
         .onChange(of: model.resolved.event) { _, newEvent in
-            Feedback.cueChanged(to: newEvent)
+            Feedback.cueChanged(to: newEvent, source: model.resolved.source)
         }
     }
 
@@ -170,7 +176,11 @@ struct ProductionView: View {
             if cue.mask.contains(.right) { return ("Obstacle, go right", "arrow.turn.up.right", .orange) }
             return ("Obstacle", "exclamationmark.triangle.fill", .orange)
         case .visionDanger:
-            return ("Person ahead", "figure.stand", .orange)
+            // The early-warning tier reuses this event for a soft pre-LiDAR heads-up; show it as an
+            // advisory, not a confirmed person.
+            return cue.source == .earlyWarning
+                ? ("Heads up, ahead", "exclamationmark.circle", .yellow)
+                : ("Person ahead", "figure.stand", .orange)
         }
     }
 }

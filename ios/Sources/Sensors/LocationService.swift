@@ -18,6 +18,13 @@ final class LocationService: NSObject {
     private(set) var trueHeading: Double = -1
     private(set) var magneticHeading: Double = -1
     private(set) var headingAccuracy: Double = -1
+    /// GPS course over ground in true-north degrees, < 0 when invalid. The direction of actual travel,
+    /// derived from position deltas, so it is immune to the magnetic interference a haptic belt creates.
+    /// The heading resolver prefers it over the compass while moving. `courseAccuracy` is iOS 13.4+.
+    private(set) var course: Double = -1
+    private(set) var courseAccuracy: Double = -1
+    /// Ground speed in m/s, < 0 when invalid. Gates whether `course` is trustworthy (it needs motion).
+    private(set) var speed: Double = -1
     private(set) var location: CLLocation?
     private(set) var lastError: String?
 
@@ -72,8 +79,16 @@ extension LocationService: CLLocationManagerDelegate {
 
     nonisolated func locationManager(_ manager: CLLocationManager, didUpdateLocations locations: [CLLocation]) {
         let last = locations.last
+        // Read the travel telemetry off the non-Sendable CLLocation here, then hop only the Doubles,
+        // matching the heading delegate's pattern.
+        let course = last?.course ?? -1
+        let courseAccuracy = last?.courseAccuracy ?? -1
+        let speed = last?.speed ?? -1
         MainActor.assumeIsolated {
             self.location = last
+            self.course = course
+            self.courseAccuracy = courseAccuracy
+            self.speed = speed
         }
     }
 

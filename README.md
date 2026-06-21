@@ -23,7 +23,7 @@ The CV layer adds object awareness on top of the LiDAR obstacle detection alread
 ### What is built
 
 - **`cv/pipeline.py`** — transport-agnostic YOLOv8n inference fused with LiDAR depth. Takes a paired (RGB frame, depth map) and returns a list of `DepthFusedDetection` objects: label, confidence, bounding box, depth at the box, and horizontal position normalized 0–1.
-- **`cv/detection.py`** — `DepthFusedDetection` dataclass and the `NAVIGATION_CLASSES` filter (20 pedestrian-relevant COCO classes: person, bicycle, car, pole, bench, etc.).
+- **`cv/detection.py`** — `DepthFusedDetection` dataclass and the `NAVIGATION_CLASSES` filter (21 pedestrian-relevant COCO classes: person, bicycle, car, bench, parking meter, etc.). The on-device iOS filter (`CitrusSquadConfig.visionNavigationClasses`) mirrors this set so both recognize the same things.
 - **`cv/ingest.py`** — FastAPI WebSocket server. Accepts binary frame pairs from the iPhone over local Wi-Fi, runs the pipeline, and broadcasts JSON detections to any connected haptic client.
 - **`cv/webcam_test.py`** — local smoke test. Runs the pipeline against a laptop webcam with a synthetic 2.0m depth plane so the full detection path can be verified without a phone.
 - **`server.py`** — entry point (`uvicorn server:app --host 0.0.0.0 --port 8000`).

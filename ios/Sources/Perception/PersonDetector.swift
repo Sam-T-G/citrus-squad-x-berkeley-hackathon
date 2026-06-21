@@ -6,8 +6,12 @@ import Vision
 import CoreML
 import os
 
-/// One fused person detection, the Swift mirror of `DepthFusedDetection` in `cv/detection.py`.
+/// One fused detection of an in-path object, the Swift mirror of `DepthFusedDetection` in
+/// `cv/detection.py`. `label` is the COCO class (`person`, `bicycle`, `bench`, ...); the gate and
+/// fusion math ignore it, but the overlay, diagnostics, and spoken tier read it.
 struct PersonDetection: Sendable, Equatable {
+    /// COCO class name from `CitrusSquadConfig.visionNavigationClasses`.
+    var label: String
     var confidence: Float
     /// Box in the upright image, normalized 0...1, top-left origin.
     var boxNormalized: CGRect
@@ -70,7 +74,8 @@ struct PersonFrameResult: Sendable {
 }
 
 /// Runs YOLOv8n (via CoreML + Vision) on the ARKit RGB frame, fuses the box with the LiDAR depth
-/// map using the same math Cole proved in Python, and turns the nearest person into a gated cue.
+/// map using the same math Cole proved in Python, and turns the nearest in-path object (any class in
+/// `CitrusSquadConfig.visionNavigationClasses`) into a gated cue.
 ///
 /// Concurrency: all state lives on one serial queue (the ARKit perception queue in `DepthService`).
 /// `process` is called only from there, so the class is `@unchecked Sendable`: there is no real
@@ -118,10 +123,11 @@ final class PersonDetector: @unchecked Sendable {
 
         var overlay: [Detection] = []
         var people: [PersonDetection] = []
-        for obs in observations where isPerson(obs, minConfidence: config.confidence) {
+        for obs in observations {
+            guard let label = navigationLabel(obs, minConfidence: config.confidence) else { continue }
             let bb = obs.boundingBox                      // normalized, bottom-left origin, upright frame
             let topLeft = CGRect(x: bb.minX, y: 1 - bb.maxY, width: bb.width, height: bb.height)
-            overlay.append(Detection(label: "person", confidence: Double(obs.confidence), box: topLeft))
+            overlay.append(Detection(label: label, confidence: Double(obs.confidence), box: topLeft))
 
             var median: Double?
             var minDepth: Double?
@@ -130,12 +136,12 @@ final class PersonDetector: @unchecked Sendable {
                 (median, minDepth) = Self.sampleDepth(depth, nativeNormalizedBox: nativeNorm,
                                                        cropRatio: config.cropRatio)
             }
-            people.append(PersonDetection(confidence: obs.confidence, boxNormalized: topLeft,
+            people.append(PersonDetection(label: label, confidence: obs.confidence, boxNormalized: topLeft,
                                           depthMedianMeters: median, depthMinMeters: minDepth,
                                           horizontalNorm: Double(topLeft.midX)))
         }
 
-        // The nearest person with a valid depth drives the cue; ties fall back to confidence.
+        // The nearest object with a valid depth drives the cue; ties fall back to confidence.
         let best = people
             .filter { $0.depthMinMeters != nil }
             .min { ($0.depthMinMeters ?? .greatestFiniteMagnitude) < ($1.depthMinMeters ?? .greatestFiniteMagnitude) }
@@ -154,9 +160,13 @@ final class PersonDetector: @unchecked Sendable {
         return PersonFrameResult(action: action, overlay: overlay, best: best)
     }
 
-    private func isPerson(_ obs: VNRecognizedObjectObservation, minConfidence: Float) -> Bool {
-        guard let top = obs.labels.first else { return false }
-        return top.identifier == "person" && obs.confidence >= minConfidence
+    /// The navigation-class label for an observation, or nil to ignore it. Replaces the person-only
+    /// filter: any class in `CitrusSquadConfig.visionNavigationClasses` is an in-path hazard
+    /// candidate. Uses the observation's objectness confidence, the same floor the person filter
+    /// used, so detection sensitivity is unchanged; only the accepted label set is wider.
+    private func navigationLabel(_ obs: VNRecognizedObjectObservation, minConfidence: Float) -> String? {
+        guard obs.confidence >= minConfidence, let top = obs.labels.first else { return nil }
+        return CitrusSquadConfig.visionNavigationClasses.contains(top.identifier) ? top.identifier : nil
     }
 
     // MARK: - Model

@@ -104,11 +104,20 @@ coverage (poles, bollards) the moment `ObjectDetectionService` lands, with no re
 | 4 | Generalize: feed `CVDetection` into `BoxObservation` once `ObjectDetectionService` is on the branch | poles and bollards flag at range with the same code path |
 | 5 | Add the flag to `PerceptionSnapshot` as a per-band field so the Claude advisor speaks with real lead time | the advisor can say "pole ahead, closing" before LiDAR sees it |
 
-Steps 1 and 2 are done. Step 1 is the tracker and its tests. Step 2 runs the tracker live off the
-person tier and shows its flags in the demo console, with no belt path touched: `DepthService.applyVision`
-maps each frame's overlay boxes into `BoxObservation`, feeds them to a `BearingTracker` on the main
-actor with the live yaw rate from `MotionService`, and pushes the flags to an `InterferenceStore` the
-camera panel reads. Step 3 onward touches the belt path, so those stay deliberate follow-ups.
+Steps 1, 2, and 3 are done. Step 1 is the tracker and its tests. Step 2 runs the tracker live off the
+person tier and shows its flags in the demo console: `DepthService.applyVision` maps each frame's
+overlay boxes into `BoxObservation`, feeds them to a `BearingTracker` on the main actor with the live
+yaw rate from `MotionService`, and pushes the flags to an `InterferenceStore` the camera panel reads.
+
+Step 3 turns a held flag into a soft cue. `AppModel.tick` adds an early-warning tier below the person
+and LiDAR tiers (so it can never delay or mask a confirmed hazard) and above navigation, behind the
+`earlyWarningCuesEnabled` toggle. The cue is `ResolvedCue.earlyWarning`: a gentle Front-motor tap at
+the floor intensity. It rides the existing `visionDanger` wire event so the firmware needs no new
+code, but carries a new `.earlyWarning` source so the output layers render it as an advisory, not a
+confirmed person: the audio speaks "caution, something ahead" instead of "person near", the production
+view shows "Heads up, ahead", and the phone mirror plays a light tap rather than the warning buzz. The
+store is cleared when the camera tier drops under thermal load, so a stale heads-up cannot stick. Step
+4 onward (open-vocab coverage, the Claude advisor) stays a follow-up.
 
 ## Street-obstacle vocabulary (YOLO-World)
 
@@ -119,8 +128,12 @@ vocabulary is frozen at export time and the class strings are learned text embed
 a contract: it must match `set_classes()` exactly, and a longer list dilutes per-class accuracy and
 costs compute, so it stays curated rather than exhaustive.
 
-The current export vocabulary (on `cole/computer-vision`, `CitrusSquadConfig.visionNavigationClasses`)
-has 20 classes and misses trees outright. Proposed additions, grouped by how they relate to this layer:
+The current vocabulary (`CitrusSquadConfig.visionNavigationClasses`, now on this branch as of commit
+`3c83f75`) has 21 COCO classes and misses street infrastructure outright (no pole, bollard, or tree).
+As of that commit the tracker already reads real per-class labels from the overlay rather than only
+`person`, so it distinguishes object types today; the additions below are the street-infrastructure
+vocabulary the bearing flag wants once an open-vocabulary model (YOLO-World) can name them. Grouped by
+how they relate to this layer:
 
 **Fixed vertical infrastructure (prime early-warning targets).** Thin, stationary, LiDAR-sparse at
 range, and dead ahead is exactly where they hurt. These are the classes the bearing flag should
@@ -207,9 +220,13 @@ gentler than a graded hazard tap. Do not add a parallel intensity constant.
 | `ios/Sources/Perception/InterferenceStore.swift` | Done (step 2). New. Main-actor `@Observable` surface the demo console reads. |
 | `ios/Sources/Sensors/DepthService.swift` | Done (step 2). Runs the tracker in `applyVision` off the overlay boxes; holds `latestYawRate`. |
 | `ios/Sources/Sensors/MotionService.swift` | Done (step 2). Exposes `yawRateRadPerSecond` for the self-rotation gate. |
-| `ios/Sources/AppModel.swift` | Done (step 2). Owns `interference`, wires it in, feeds yaw each tick. Step 3 adds the soft cue here. |
+| `ios/Sources/AppModel.swift` | Done (steps 2-3). Owns `interference`, feeds yaw each tick, and arbitrates the `earlyWarningCue()` tier below person and LiDAR behind `earlyWarningCuesEnabled`. |
 | `ios/Sources/UI/Demo/CameraPanel.swift` | Done (step 2). `EarlyWarningBanner` over the preview; flagged-frame count. |
-| `ios/Sources/CitrusSquadConfig.swift` | Edit (step 3). The early-warning enable flag; reuse `intensityFloor` for the soft tap. |
+| `ios/Sources/Perception/Cues.swift` | Done (step 3). The `.earlyWarning` source and the `ResolvedCue.earlyWarning` soft-tap factory (floor intensity, Front, reuses `visionDanger`). |
+| `ios/Sources/Perception/AudioCueSink.swift` | Done (step 3). Source-aware dedup; speaks "caution, something ahead" for the advisory. |
+| `ios/Sources/UI/ProductionView.swift` | Done (step 3). Distinct "Heads up, ahead" visual; passes source to the haptic. |
+| `ios/Sources/UI/Feedback.swift` | Done (step 3). Light phone-haptic mirror for the early-warning source. |
+| `ios/Sources/UI/ControlPanelView.swift` | Done (step 3). Early-warning toggle and live flag count on the depth card. |
 | `ios/Sources/Perception/ObjectDetectionService.swift` | Edit (step 4). Map `CVDetection` into `BoxObservation`; the vocabulary above. |
 | `ios/Sources/Perception/PerceptionSnapshot.swift` | Edit (step 5). Carry the flag per band for the Claude advisor. |
 | `PersonDetector.swift` is left unchanged: the tracker reads the overlay `DepthService` already produces, so the person tier needs no edit. |

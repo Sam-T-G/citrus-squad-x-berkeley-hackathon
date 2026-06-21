@@ -58,11 +58,14 @@ struct AvoidanceFilterTests {
         #expect(filter.update(raw) == raw)       // second tick: activates
     }
 
-    @Test func stickyToTheChosenSide() {
-        var filter = AvoidanceFilter(settleTicks: 1, holdTicks: 2)
-        #expect(filter.update(.steer(.right, 1.0)) == .steer(.right, 1.0))
-        // Raw flips to the other side; the filter holds the original to avoid whipping the wearer.
+    @Test func switchesSideOnlyAfterTheNewSidePersists() {
+        var filter = AvoidanceFilter(settleTicks: 2, holdTicks: 2)
+        #expect(filter.update(.steer(.right, 1.0)) == .clear)               // tick 1: settling in
+        #expect(filter.update(.steer(.right, 1.0)) == .steer(.right, 1.0))  // tick 2: right active
+        // One opposite reading is noise — hold the current side.
         #expect(filter.update(.steer(.left, 1.0)) == .steer(.right, 1.0))
+        // A sustained opposite reading switches dynamically.
+        #expect(filter.update(.steer(.left, 1.0)) == .steer(.left, 1.0))
     }
 
     @Test func clearReleasesOnlyAfterHold() {

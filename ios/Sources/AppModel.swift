@@ -31,6 +31,11 @@ final class AppModel {
     /// heartbeat. Toggle it off to test pure route cues. See `docs/03-protocol.md` obstacle tier.
     var obstacleCuesEnabled = true
 
+    /// The pre-LiDAR early-warning tier (a soft Front tap for a centered, looming object). Sits below
+    /// the person and LiDAR tiers, so it can never mask a real hazard. On by default; toggle off to
+    /// fall back to the depth-only behavior. See `ios/PERCEPTION-EARLY-WARNING-PLAN.md`.
+    var earlyWarningCuesEnabled = true
+
     /// Pluggable endpoints. Cole's CV is a `HazardSource`; Josh's audio is a `CueSink`. Add more
     /// here and the decide loop fans out to them with no other change.
     let vision = VisionHazardSource()
@@ -87,6 +92,13 @@ final class AppModel {
     /// Live avoidance read-outs for the Diagnostics screen: the raw decision and the debounced one.
     private(set) var avoidanceRaw = "clear"
     private(set) var avoidanceFiltered = "clear"
+
+    /// Last body-forward heading the resolver trusted, reused for a tick or two when it briefly returns
+    /// nil (ground speed dipping between steps) so the live cue does not flicker.
+    private var lastBodyHeading: Double?
+    /// Which source drove the live heading last tick (`course` / `compass` / `hold`), for the field
+    /// readout while validating the heading fix.
+    private(set) var headingSource = "—"
 
     private var cueSinks: [CueSink] { [audio] }
 
@@ -238,9 +250,10 @@ final class AppModel {
         }
     }
 
-    /// Travel heading for the map camera: the simulated course, or the live compass.
+    /// Travel heading for the map camera: the simulated course, or the resolved live body heading
+    /// (GPS course while moving) so the map and the belt steer off the same direction.
     var navHeading: Double {
-        mode == .simulate ? simulator.heading : location.trueHeading
+        mode == .simulate ? simulator.heading : (lastBodyHeading ?? location.trueHeading)
     }
 
     private var liveGeoPoint: GeoPoint? {
@@ -380,14 +393,19 @@ final class AppModel {
         depth.visionEnabled = ProcessInfo.processInfo.thermalState.rawValue < ProcessInfo.ThermalState.serious.rawValue
 
         // Hand the early-warning tracker the live turn rate so it can tell a centered obstacle from
-        // the wearer panning the camera. Diagnostics only; this does not enter the cue decision below.
+        // the wearer panning the camera. When the camera tier is dropped (thermal), clear any held
+        // flags so a stale heads-up cannot stick after detection stops.
         depth.latestYawRate = motion.yawRateRadPerSecond
+        if !depth.visionEnabled { interference.clear() }
 
         // Priority stack, highest first: a person in the path (camera) preempts everything; then the
-        // LiDAR obstacle-avoidance layer steers around what is ahead; navigation rides underneath.
+        // LiDAR obstacle-avoidance layer steers around what is ahead; then the pre-LiDAR early-warning
+        // heads-up; navigation rides underneath. Each lower tier only fires when the ones above are
+        // quiet, so the soft heads-up can never delay or mask a confirmed person or obstacle cue.
         let turn = currentTurnCue()
         let person = vision.currentHazard
         let avoidance = obstacleCuesEnabled ? avoidanceCue() : nil
+        let earlyWarning = earlyWarningCuesEnabled ? earlyWarningCue() : nil
 
         let decided: ResolvedCue
         if let person {
@@ -397,6 +415,8 @@ final class AppModel {
                                   source: .hazard)
         } else if let avoidance {
             decided = avoidance
+        } else if let earlyWarning {
+            decided = earlyWarning
         } else if let turn {
             decided = ResolvedCue(event: turn.event,
                                   mask: turn.mask,
@@ -449,24 +469,55 @@ final class AppModel {
         meters < 0 ? "—" : String(format: "%.2f", meters)
     }
 
+    /// The soft pre-LiDAR heads-up, or nil when nothing is on a collision course. Fires whenever the
+    /// bearing tracker is holding a flag (a centered, looming object). The flag already carries the
+    /// settle discipline, so this needs no debounce of its own; it is gated below the person and LiDAR
+    /// tiers in `tick`, so it only reaches the belt when the path is otherwise quiet.
+    private func earlyWarningCue() -> ResolvedCue? {
+        guard interference.active != nil else { return nil }
+        return .earlyWarning
+    }
+
     /// The turn cue for the current drive mode, or nil.
     private func currentTurnCue() -> Cue? {
         switch mode {
         case .bench:
+            // Bench is the operator's heading-to-cue diagnostic (the Nav bench slider sets the target
+            // bearing). It refreshes that card's cue read-out but does NOT drive the belt: with no
+            // destination loaded there is nothing to navigate to, so the belt stays quiet rather than
+            // steering toward a placeholder bearing. Load a route and Run sim or Walk GPS to navigate.
+            // The hazard tiers still fire without a route, so obstacle avoidance keeps working.
             guard location.trueHeading >= 0 else { return nil }
             route.update(phoneHeading: location.trueHeading)
-            return route.currentCue
+            return nil
         case .simulate:
             guard let (point, heading) = simulator.step(dt: 0.1) else { return nil }
             // The simulator's heading is already body-forward, so do not apply compass calibration.
             route.updateRoute(location: point, phoneHeading: heading, applyCalibration: false)
             return route.currentCue
         case .live:
-            // Field walk: follow the route from the real GPS fix and compass.
-            guard let fix = liveGeoPoint, location.trueHeading >= 0 else { return nil }
-            route.updateRoute(location: fix, phoneHeading: location.trueHeading)
+            // Field walk: follow the route from the real GPS fix, steering off the resolved body
+            // heading (GPS course while moving, accuracy-gated compass when stopped). The resolved
+            // value is already body-forward true north, so the calibration offset is bypassed.
+            guard let fix = liveGeoPoint, let heading = resolveLiveHeading() else { return nil }
+            route.updateRoute(location: fix, phoneHeading: heading, applyCalibration: false)
             return route.currentCue
         }
+    }
+
+    /// Body-forward true-north heading for the live walk, from `HeadingResolver`, with a short hold so
+    /// a momentary speed dip between steps does not drop the cue. Returns nil only when there is no
+    /// trustworthy heading and none was held.
+    private func resolveLiveHeading() -> Double? {
+        if let resolved = HeadingResolver.resolve(
+            course: location.course, courseAccuracy: location.courseAccuracy, speed: location.speed,
+            trueHeading: location.trueHeading, headingAccuracy: location.headingAccuracy) {
+            lastBodyHeading = resolved.degrees
+            headingSource = resolved.source.rawValue
+            return resolved.degrees
+        }
+        if lastBodyHeading != nil { headingSource = "hold" }
+        return lastBodyHeading
     }
 
     /// Highest-priority hazard across all sources: a person first, then the nearest obstacle.
