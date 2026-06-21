@@ -254,27 +254,6 @@ struct ControlPanelView: View {
                 get: { model.objectDetection.isEnabled },
                 set: { model.objectDetection.isEnabled = $0 }
             ))
-            HStack {
-                if model.objectDetection.isLogging {
-                    Button("Flush log now") { model.objectDetection.rollLog() }
-                        .buttonStyle(.bordered)
-                }
-                if let url = model.objectDetection.lastLogURL {
-                    ShareLink(item: url) {
-                        Label("Share CSV", systemImage: "square.and.arrow.up")
-                    }
-                    .buttonStyle(.bordered)
-                }
-            }
-            switch model.objectDetection.uploadStatus {
-            case .idle: EmptyView()
-            case .uploading:
-                Text("Uploading to GitHub…").font(.caption).foregroundStyle(.secondary)
-            case .done:
-                Text("Uploaded to logs/cv/ (auto-rolls every 60 s)").font(.caption).foregroundStyle(.green)
-            case .failed(let msg):
-                Text("Upload failed: \(msg)").font(.caption).foregroundStyle(.red)
-            }
             if let err = model.objectDetection.lastError {
                 Text(err).font(.caption).foregroundStyle(.red)
             }
