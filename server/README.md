@@ -1,13 +1,13 @@
 # Belt bridge server
 
-Low-latency forwarder between the phone and the Arduino. This is the no-ESP32 / no-Wi-Fi path: the laptop hosts the link and tethers to the Arduino over USB. The phone sends its LC2 cue stream over a WebSocket; this server translates each cue to a single command byte and writes it to the Arduino over one long-lived USB serial connection, and serves a health dashboard. The design and the research behind it are in [`../docs/15-belt-server-bridge-plan.md`](../docs/15-belt-server-bridge-plan.md).
+Low-latency forwarder between the phone and the Arduino. This is the no-ESP32 / no-Wi-Fi path: the laptop hosts the link and tethers to the Arduino over USB. The phone sends its LC2 cue stream (UDP); this server translates each cue to a single command word and writes it to the Arduino over one long-lived USB serial connection, and serves a health dashboard. The design and the research behind it are in [`../docs/15-belt-server-bridge-plan.md`](../docs/15-belt-server-bridge-plan.md).
 
 ```
-Phone --UDP (4 LC2 bytes)--> this server --USB serial (1 command byte)--> Arduino
+Phone --UDP (4 LC2 bytes)--> this server --USB serial (1 command word)--> Arduino
             (WebSocket /belt also accepted, for the test client and browser debug)
 ```
 
-The Arduino firmware it drives is [`arduino/belt.ino`](arduino/belt.ino) (Adafruit PCA9685 + a four-pattern state machine), which reads one ASCII byte per cue: `s` stop/hazard, `l` left, `r` right, `f` straight. The server only writes when the command **changes**, so the firmware's one-shot tap patterns are not re-triggered by the phone's 10 Hz heartbeat.
+The Arduino firmware it drives is [`arduino/belt.ino`](arduino/belt.ino) (Adafruit PCA9685 + a continuous-pulse state machine), which reads one newline-terminated word per cue: `forward`, `stop`, `left`, `right`, `rotate_left`, `rotate_right`, `idle`. Each word latches a pulse pattern that runs until the next command, so **`idle` is what stops the belt**. The server writes only when the command **changes** (so the 10 Hz heartbeat does not re-latch the same pattern) and sends `idle` automatically if the phone link goes silent, so a dropped link cannot leave the belt buzzing.
 
 It runs with no hardware attached (mock mode), so the server can be built and tested before the Arduino is wired.
 
@@ -48,7 +48,7 @@ SERIAL_PORT=/dev/tty.usbmodem1101 python app.py
 
 ## Test the path without the phone
 
-- **Server to belt (B1):** with the dashboard open, click a test button, or hit `http://localhost:8080/test?event=33&mask=4` (turn-now, Right -> `r`). The belt should fire, or in mock mode you see the command byte logged.
+- **Server to belt (B1):** with the dashboard open, click a test button, or hit `http://localhost:8080/test?event=33&mask=4` (turn-now, Right -> `right`). The belt should fire, or in mock mode you see the command word logged.
 - **WebSocket to belt (B2 / B4):** run the stand-in phone, which streams a scripted cue sequence at 10 Hz:
   ```sh
   python test_client.py            # server on this machine
@@ -70,10 +70,11 @@ The WebSocket endpoint (`ws://<laptop-ip>:8080/belt`) stays available for the st
 ## Wire format
 
 - **In (WebSocket):** the 4 raw LC2 bytes per frame, `event, mask, intensity, seq`, exactly what the phone already builds. A JSON text frame `{"event":33,"mask":4,"intensity":192,"seq":0}` also works, for debugging.
-- **Out (serial):** one ASCII byte per cue change, mapped from the cue by `lc2_to_command`:
-  - `l` / `r` / `f` for a directional turn (mask bit Left `0x02`, Right `0x04`, Front `0x01`)
-  - `s` for a hazard, obstacle, U-turn, or arrived cue (the stop/alert buzz)
-  - nothing for idle (the belt finishes its pattern and falls quiet)
+- **Out (serial):** one newline-terminated word per cue change, mapped by `lc2_to_command`:
+  - `left` / `right` / `forward` for a directional turn (mask bit Left `0x02`, Right `0x04`, Front `0x01`)
+  - `rotate_left` for a U-turn / reorient (event `0x22`; the mask is both sides, so a side is chosen)
+  - `stop` for a hazard, obstacle, or arrived cue (the all-servo buzz)
+  - `idle` for an idle cue, and automatically on link silence (this is what stops the belt)
 
   Intensity, sequence, and any far-left/far-right distinction do not survive this mapping. The Arduino path is the coarse fallback; the ESP32 path (`firmware/`) keeps the full LC2 frame over UDP.
 
@@ -85,10 +86,11 @@ The WebSocket endpoint (`ws://<laptop-ip>:8080/belt`) stays available for the st
 | `SERIAL_BAUD` | `9600` | matches `Serial.begin(9600)` in `arduino/belt.ino` |
 | `PORT` | `8080` | HTTP / WebSocket port |
 | `UDP_PORT` | `9999` | UDP port the phone sends LC2 to (matches iOS `espPort`) |
-| `WARMUP_S` | `2.0` | pause after opening serial, for the Uno auto-reset |
+| `WARMUP_S` | `2.0` | pause after opening serial, for the Arduino auto-reset |
+| `SILENCE_TIMEOUT_S` | `0.5` | send `idle` if no cue arrives within this, so a dropped link quiets the belt |
 
 ## Notes
 
 - The serial port is opened **once** and held for the whole session. Opening it resets the Arduino (its DTR auto-reset), so the server never reopens per message; it reconnects with a warmup only if the link drops.
-- Latest-wins, change-only: only the most recent cue is considered, and a command byte is written only when it differs from the last one sent. The firmware's patterns are one-shot and return to idle on their own, so a held cue taps once and the belt falls quiet without needing a stop command.
+- Latest-wins, change-only: only the most recent cue is considered, and a command word is written only when it differs from the last one sent, so the heartbeat does not re-latch the active pattern. The firmware pulses continuously until the next command, so the server sends `idle` when a cue clears and again if the link falls silent past `SILENCE_TIMEOUT_S` (0.5 s); that is what stops the belt.
 - This server never decides cues. The phone owns all arbitration; this is a forwarder.

@@ -279,8 +279,11 @@ final class AppModel {
         switch command {
         case .setDestination(let place): return await setSpokenDestination(place)
         case .routeStatus: return spokenRouteStatus()
+        case .nextTurn: return spokenNextTurn()
+        case .tripSummary: return spokenTripSummary()
         case .whereAmI: return await spokenLocation()
         case .describeSurroundings: return spokenSurroundings()
+        case .checkPath: return spokenPathCheck()
         case .recalibrate:
             return calibrate() ? "Recalibrated. Face forward and start walking." : "Hold still, then try again."
         case .connectBelt:
@@ -352,6 +355,72 @@ final class AppModel {
         return "On route. \(remaining) turns left."
     }
 
+    /// A natural heads-up about the next turn, in feet: "You'll make a left turn in about 100 feet."
+    /// Reads the same turn cue the belt follows, so the spoken heads-up matches the tap.
+    private func spokenNextTurn() -> String {
+        guard !route.maneuvers.isEmpty, route.path.count >= 2 else {
+            return "No route is set. Tell me where you want to go and I'll guide you."
+        }
+        let feet = Self.feet(fromMeters: route.distanceToNext)
+        guard let cue = route.currentCue else {
+            return route.distanceToNext > 0
+                ? "Keep going straight. The next turn is about \(Self.roundedFeet(feet)) feet ahead."
+                : "Keep going straight."
+        }
+        switch cue.event {
+        case .arrived:
+            return "You're arriving at your destination."
+        case .turnAround:
+            return "Make a U-turn when it's safe."
+        case .forward, .idle:
+            return route.distanceToNext > 0
+                ? "Keep going straight for about \(Self.roundedFeet(feet)) feet."
+                : "Keep going straight."
+        case .turnSlight:
+            return turnPhrase(direction: "a slight \(cue.mask.contains(.right) ? "right" : "left")", feet: feet)
+        case .turnNow:
+            return turnPhrase(direction: "a \(cue.mask.contains(.right) ? "right" : "left") turn", feet: feet)
+        default:
+            return turnPhrase(direction: "a turn", feet: feet)
+        }
+    }
+
+    private func turnPhrase(direction: String, feet: Double) -> String {
+        guard feet > 0 else { return "Make \(direction) now." }
+        if feet < 25 { return "Make \(direction) just ahead." }
+        return "You'll make \(direction) in about \(Self.roundedFeet(feet)) feet."
+    }
+
+    /// How far is left to the destination and a rough walking time, in feet or miles.
+    private func spokenTripSummary() -> String {
+        guard route.remaining >= 0, route.path.count >= 2 else {
+            return "No route is set right now."
+        }
+        let meters = route.remaining
+        if meters < 5 { return "You've arrived at your destination." }
+        let seconds = RouteMath.walkingETASeconds(forDistance: meters)
+        let minutes = max(1, Int((seconds / 60).rounded()))
+        let distance: String
+        let feet = Self.feet(fromMeters: meters)
+        if feet >= 528 {                                   // a tenth of a mile or more reads in miles
+            distance = String(format: "about %.1f miles", meters / 1609.34)
+        } else {
+            distance = "about \(Self.roundedFeet(feet)) feet"
+        }
+        return "You're \(distance) from your destination, around \(minutes) minute\(minutes == 1 ? "" : "s") away."
+    }
+
+    /// Meters to feet, for the spoken US-unit heads-ups.
+    static func feet(fromMeters meters: Double) -> Double { meters * 3.28084 }
+
+    /// Round feet to a friendly spoken number: nearest 10 up close, coarser farther out.
+    static func roundedFeet(_ feet: Double) -> Int {
+        guard feet > 0 else { return 0 }
+        if feet < 100 { return max(10, Int((feet / 10).rounded()) * 10) }
+        if feet < 1000 { return Int((feet / 50).rounded()) * 50 }
+        return Int((feet / 100).rounded()) * 100
+    }
+
     /// Reverse-geocode the current GPS fix to a spoken place. Real location context from Maps.
     private func spokenLocation() async -> String {
         guard let fix = location.location else {
@@ -389,6 +458,63 @@ final class AppModel {
         guard let label = hazard.label, !label.isEmpty else { return "something" }
         let vowel = "aeiou".contains(label.lowercased().first ?? " ")
         return "\(vowel ? "an" : "a") \(label)"
+    }
+
+    /// A collision-avoidance read of the path for the voice agent. It fuses what the camera sees in
+    /// the path (the YOLO object or person, its side and distance) with what the LiDAR says about the
+    /// three bands, and runs the same `ObstacleAvoidance` logic the belt uses to find the open side.
+    /// The returned line already names the safe direction, so the agent can suggest a step left, a
+    /// step right, or a stop without ever sending the wearer into a blocked side. Additive only: this
+    /// reads the perception state, it never changes the belt's LiDAR reflex (see `docs/12` §4).
+    private func spokenPathCheck() -> String {
+        guard depth.isRunning else {
+            return "I can't watch the path right now. Turn the camera on so I can check for obstacles."
+        }
+        let bands = depth.bands
+        let directive = ObstacleAvoidance.decide(left: bands.left, center: bands.center, right: bands.right,
+                                                 threshold: depth.thresholdMeters,
+                                                 near: CitrusSquadConfig.dangerNearMeters)
+        // Prefer the camera hazard (it knows what the thing is); fall back to the raw LiDAR obstacle.
+        let hazard = vision.currentHazard ?? depth.currentHazard
+        let what = hazard.map { Self.spokenObject(for: $0) } ?? "something"
+        let whereText = hazard.map { Self.sideWord(for: $0.mask) }
+
+        switch directive {
+        case .stop(let meters):
+            let dist = Self.spokenFeet(fromMeters: meters)
+            return "Stop. \(Self.firstCapitalized(what)) is \(dist) ahead and both sides are tight. Hold still, then turn slowly and I'll find an opening."
+        case .steer(let openMask, let meters):
+            let open = openMask.contains(.left) ? "left" : "right"
+            let dist = Self.spokenFeet(fromMeters: meters)
+            let place = whereText.map { " \($0)" } ?? " ahead"
+            return "Heads up, \(what)\(place) about \(dist). The \(open) side is open, so ease to your \(open) to go around it."
+        case .clear:
+            // LiDAR sees no blockage in front, but the camera may still flag a person or object so the
+            // agent can give a soft heads-up before it becomes a real obstacle.
+            if let hazard, hazard.distanceMeters > 0 {
+                let dist = Self.spokenFeet(fromMeters: hazard.distanceMeters)
+                let place = whereText.map { " \($0)" } ?? " ahead"
+                return "\(Self.firstCapitalized(what))\(place) about \(dist), but your path is open. Keep going and stay ready to ease aside if it gets closer."
+            }
+            return "Your path ahead is clear."
+        }
+    }
+
+    /// A spoken distance in feet from meters, like "about 8 feet".
+    static func spokenFeet(fromMeters meters: Double) -> String {
+        "about \(roundedFeet(feet(fromMeters: meters))) feet"
+    }
+
+    /// Which side a hazard mask sits on, phrased for speech.
+    static func sideWord(for mask: QuadrantMask) -> String {
+        if mask.contains(.left) { return "on your left" }
+        if mask.contains(.right) { return "on your right" }
+        return "straight ahead"
+    }
+
+    /// Capitalize just the first letter, so "a person" reads as "A person" at the start of a sentence.
+    static func firstCapitalized(_ text: String) -> String {
+        text.isEmpty ? text : text.prefix(1).uppercased() + text.dropFirst()
     }
 
     // MARK: - Decide loop
