@@ -254,6 +254,27 @@ struct ControlPanelView: View {
                 get: { model.objectDetection.isEnabled },
                 set: { model.objectDetection.isEnabled = $0 }
             ))
+            HStack {
+                if model.objectDetection.isLogging {
+                    Button("Stop log") { model.objectDetection.stopLogging() }
+                        .buttonStyle(.bordered)
+                } else {
+                    Button("Start log") { model.objectDetection.startLogging() }
+                        .buttonStyle(.borderedProminent)
+                        .disabled(!model.objectDetection.modelLoaded)
+                }
+                if let url = model.objectDetection.lastLogURL {
+                    ShareLink(item: url) {
+                        Label("Share CSV", systemImage: "square.and.arrow.up")
+                    }
+                    .buttonStyle(.bordered)
+                }
+            }
+            if model.objectDetection.isLogging {
+                Text("Recording — stop to export CSV")
+                    .font(.caption)
+                    .foregroundStyle(.orange)
+            }
             if let err = model.objectDetection.lastError {
                 Text(err).font(.caption).foregroundStyle(.red)
             }

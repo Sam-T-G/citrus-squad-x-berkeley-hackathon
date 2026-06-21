@@ -39,6 +39,8 @@ final class ObjectDetectionService {
     /// Objects currently classified as approaching or moving — ready for Claude identification.
     /// Stationary objects are omitted: LiDAR + Sam's param layer handles those.
     private(set) var movingObjects: [TrackedObject] = []
+    private(set) var isLogging = false
+    private(set) var lastLogURL: URL?
     private(set) var lastError: String?
 
     // All properties below are accessed only on ARKit's serial callback queue.
@@ -51,6 +53,7 @@ final class ObjectDetectionService {
     @ObservationIgnored nonisolated(unsafe) private var enabledMirror = true
     @ObservationIgnored nonisolated(unsafe) private weak var hazardSink: VisionHazardSource?
     @ObservationIgnored nonisolated(unsafe) private var tracker = MotionTracker()
+    @ObservationIgnored nonisolated(unsafe) private var cvLogger = CVLogger()
 
     private let log = Logger(subsystem: "com.samuelgerungan.CitrusSquad", category: "cv")
 
@@ -69,6 +72,20 @@ final class ObjectDetectionService {
 
     func stop(depthService: DepthService) {
         depthService.onFrame = nil
+    }
+
+    // MARK: - Session logging
+
+    func startLogging() {
+        cvLogger.start()
+        isLogging = true
+        lastLogURL = nil
+    }
+
+    func stopLogging() {
+        let url = cvLogger.stop()
+        isLogging = false
+        lastLogURL = url
     }
 
     // MARK: - Model loading
@@ -106,6 +123,7 @@ final class ObjectDetectionService {
         let detections = Self.runDetection(model: det, in: image)
         motionFrameIdx &+= 1
         let tracked = tracker.update(detections: detections, frameIndex: motionFrameIdx)
+        cvLogger.log(frameIndex: motionFrameIdx, tracked: tracked, bands: bands)
 
         let hazard = Self.fuseTracked(tracked, bands: bands)
         let settled = advance(hazard: hazard)
