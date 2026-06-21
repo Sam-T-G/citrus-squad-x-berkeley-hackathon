@@ -14,10 +14,11 @@ The wearer wants steady guidance that resists small wobble, but still reacts fas
 
 ## What is built
 
-A small state machine, `NavigationCueSmoother`, sits between the bearing math and the cue. It adds two layers of resistance, both navigation-only:
+A small state machine, `NavigationCueSmoother`, sits between the bearing math and the cue. It adds three layers of resistance, all navigation-only:
 
 1. **Boundary hysteresis.** The band the belt is currently holding gets widened by a margin before the cue is allowed to leave it. A bearing that only dithers across a boundary holds the current tap. The wide rear (turn-around) band gets a larger margin than the adjacent boundaries.
 2. **Dwell.** Once the bearing genuinely crosses past the widened band, the new band has to persist for a few ticks before the belt commits to it. A one-frame heading spike gets swallowed. A real, sustained turn still commits in a few hundred milliseconds.
+3. **Escalation-aware dwell.** The dwell is sized to how big the correction is. A small adjacent nudge (a swing under `navCueEscalationDegrees`) waits the full `navCueDwellTicks`, the resistance against wobble. A clear, larger turn waits the shorter `navCueTurnDwellTicks`, so it takes agency and commits a tick sooner. The short dwell is floored at two ticks, so even a sharp swing or U-turn still cannot commit on a single-frame spike. The swing is measured between the held band's center and the candidate band's center.
 
 The first reading after a reset commits immediately, so the belt is correct from the first tick instead of holding a stale cue. The smoother resets on a new route, on arrival, and when the wearer goes off-path.
 
@@ -34,16 +35,19 @@ The smoother only touches the route-following turn cue. In `AppModel.tick()` the
 
 ## The knobs
 
-All three live in `CitrusSquadConfig.swift`.
+All five live in `CitrusSquadConfig.swift`.
 
-- `navCueDwellTicks` (currently `3`) - consecutive 10 Hz ticks a new band must persist before the belt switches. 3 is about 300 ms. Lower is snappier and more sensitive. Higher is steadier and laggier.
+- `navCueDwellTicks` (currently `3`) - dwell for a small adjacent nudge, the resistance against wobble. Consecutive 10 Hz ticks the new band must persist before the belt switches. 3 is about 300 ms. Higher is steadier and laggier on the small stuff.
+- `navCueTurnDwellTicks` (currently `2`) - dwell for a clear, larger turn, about 200 ms. Keep it at or above 2: at 1 a single-frame heading spike to a far band would reach the belt.
+- `navCueEscalationDegrees` (currently `60.0`) - the swing between the held band and the candidate band above which a change counts as a real turn (shorter dwell) rather than a nudge (full dwell). 60 is one quadrant step, so adjacent nudges stay slow. Lower it to give more changes the fast path; raise it to make only big swings quick.
 - `hysteresisAdjacentDegrees` (currently `5.0`) - the deadband margin on the normal band boundaries. Bigger means the bearing has to overshoot a boundary by more before the cue changes. This is the main lever for the side-to-side chatter.
 - `hysteresisTurnAroundDegrees` (currently `10.0`) - the deadband margin on the wide rear turn-around band only.
 
 Rough mental model while tuning:
 
 - Belt still chatters between adjacent taps -> raise `hysteresisAdjacentDegrees` first (try 7 or 8), then raise `navCueDwellTicks`.
-- Belt feels sluggish or laggy to start a real turn -> lower `navCueDwellTicks` (try 2), then lower `hysteresisAdjacentDegrees`.
+- Small adjustments feel slow but a real turn feels fine -> raise `navCueDwellTicks` only, leave `navCueTurnDwellTicks`.
+- A real turn feels laggy to start -> lower `navCueTurnDwellTicks` toward 2, or lower `navCueEscalationDegrees` so more turns take the fast path. Do not drop `navCueTurnDwellTicks` below 2.
 - The U-turn cue flickers in and out at the back -> raise `hysteresisTurnAroundDegrees`.
 
 Change one knob at a time so you can tell what did what.
@@ -86,7 +90,7 @@ Each change is a config edit, then `xcodegen generate` is not needed for a pure 
 
 ## Open questions to resolve tomorrow
 
-- Is a flat dwell right, or should a jump of two or more bands (a real sharp correction) commit faster than a one-band nudge? Right now every band change waits the same dwell. Escalation-aware dwell is the obvious next idea if turns feel slow but small wobble still leaks through.
+- Escalation-aware dwell is now in (a larger swing commits a tick sooner than a nudge). What is left is dialing `navCueEscalationDegrees` and `navCueTurnDwellTicks` against real belt feel. Watch in particular whether a 90 degree turn (sharp, currently on the fast path) feels right at 2 ticks, and whether a slight turn should ever get the fast path.
 - Should the input bearing get a light low-pass filter on top of the output smoothing, or does the band plus dwell cover it? Adding input smoothing is a separate lever and may double-count.
 - Live GPS course is noisy at low walking speed. Check whether the resistance is enough there, or whether the heading source itself needs attention (see `resolveLiveHeading` in `AppModel`).
 - Confirm the margins still feel right after any chest-mount calibration-on-start work lands, since that changes the body-heading zero.

@@ -25,6 +25,8 @@ struct NavigationCueSmoother {
     /// Resolve the cue for this tick's relative bearing, applying hysteresis then dwell.
     mutating func update(relativeBearing: Double,
                          dwellTicks: Int = CitrusSquadConfig.navCueDwellTicks,
+                         turnDwellTicks: Int = CitrusSquadConfig.navCueTurnDwellTicks,
+                         escalationDegrees: Double = CitrusSquadConfig.navCueEscalationDegrees,
                          adjacentMargin: Double = CitrusSquadConfig.hysteresisAdjacentDegrees,
                          turnAroundMargin: Double = CitrusSquadConfig.hysteresisTurnAroundDegrees) -> Cue {
         let raw = QuadrantMapper.band(forRelativeBearing: relativeBearing)
@@ -45,19 +47,31 @@ struct NavigationCueSmoother {
             return current.cue
         }
 
-        // Past the deadband, so this is a real candidate. Require it to persist before committing.
+        // Past the deadband, so this is a real candidate. Count how long it has persisted, then
+        // require a dwell sized to how big the correction is: a clear, larger turn commits on the
+        // shorter dwell (agency), a small adjacent nudge waits the full one (resistance). The short
+        // dwell is still at least two ticks, so a single-frame spike to a far band cannot commit.
         if raw == pending {
             pendingTicks += 1
         } else {
             pending = raw
             pendingTicks = 1
         }
-        if pendingTicks >= max(1, dwellTicks) {
+        let swing = Self.swingDegrees(current.center, raw.center)
+        let required = swing >= escalationDegrees ? turnDwellTicks : dwellTicks
+        if pendingTicks >= max(1, required) {
             held = raw
             pending = nil
             pendingTicks = 0
         }
         return held?.cue ?? raw.cue
+    }
+
+    /// Circular distance between two bearings, in [0, 180]. Sizes a band change so the dwell can shrink
+    /// for a real turn and stay full for a small nudge.
+    private static func swingDegrees(_ a: Double, _ b: Double) -> Double {
+        let delta = abs(Bearing.normalize(a) - Bearing.normalize(b))
+        return min(delta, 360 - delta)
     }
 
     /// Forget the held band. Call when a new route loads or driving stops so the next walk starts

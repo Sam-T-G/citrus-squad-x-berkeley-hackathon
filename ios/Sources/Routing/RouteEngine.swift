@@ -31,6 +31,10 @@ enum QuadrantMapper {
             let offset = Bearing.normalize(angle - (lower - margin))
             return offset < span
         }
+
+        /// The band's middle bearing. Used to measure how big a correction a band change is, so the
+        /// smoother can commit a real turn faster than a small adjacent nudge.
+        var center: Double { Bearing.normalize(lower + width / 2) }
     }
 
     /// The quadrant table, in order, covering the full circle exactly once.

@@ -90,6 +90,7 @@ struct NavigationCueSmootherTests {
     private let front = Cue(event: .forward, mask: .front)
     private let slightRight = Cue(event: .turnSlight, mask: .right)
     private let sharpRight = Cue(event: .turnNow, mask: .right)
+    private let turnAround = Cue(event: .turnAround, mask: .rotate)
 
     @Test func firstReadingCommitsImmediately() {
         // No history, so the belt is correct from the first tick instead of holding a stale cue.
@@ -110,19 +111,36 @@ struct NavigationCueSmootherTests {
         #expect(cues == [front, front, front])
     }
 
-    @Test func aSustainedTurnCommitsAfterTheDwell() {
-        // Held past the deadband for the full dwell, the belt commits to the new band.
+    @Test func aSmallNudgeWaitsTheFullDwell() {
+        // Front to slight-right is one quadrant step (35° swing, under the 60° escalation line), so it
+        // stays on the slow dwell: commits only on the third tick past the deadband.
+        let cues = replay([0, 20, 20, 20])
+        #expect(cues[0] == front)        // on course
+        #expect(cues[1] == front)        // candidate, not yet committed
+        #expect(cues[2] == front)        // still pending (navCueDwellTicks = 3)
+        #expect(cues[3] == slightRight)  // full dwell satisfied
+    }
+
+    @Test func aRealTurnCommitsOnTheShorterDwell() {
+        // Front to sharp-right is a 90° swing, past the escalation line, so it takes agency and
+        // commits a tick sooner than the nudge above (navCueTurnDwellTicks = 2).
         let cues = replay([0, 90, 90, 90])
         #expect(cues[0] == front)        // on course
         #expect(cues[1] == front)        // candidate, not yet committed
-        #expect(cues[2] == front)        // still pending
-        #expect(cues[3] == sharpRight)   // dwell satisfied (navCueDwellTicks = 3)
+        #expect(cues[2] == sharpRight)   // shorter dwell satisfied on tick two
     }
 
-    @Test func crossingTheDeadbandThenSettlingCommitsTheBand() {
-        // Move clearly into slight-right (20°, past the 10°+5° deadband) and stay: commits after dwell.
-        let cues = replay([0, 20, 20, 20])
-        #expect(cues[3] == slightRight)
+    @Test func aSharpSwingStillRejectsASingleFrameSpike() {
+        // A U-turn is the biggest swing, but the shorter dwell is floored at two ticks, so a one-frame
+        // spike to the rear band never reaches the belt.
+        let cues = replay([0, 180, 0])
+        #expect(cues == [front, front, front])
+    }
+
+    @Test func aSustainedUTurnCommitsAtTheFloor() {
+        // Held for two ticks, the U-turn commits.
+        let cues = replay([0, 180, 180])
+        #expect(cues[2] == turnAround)
     }
 }
 

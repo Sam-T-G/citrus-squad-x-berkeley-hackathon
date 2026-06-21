@@ -21,9 +21,17 @@ enum CitrusSquadConfig {
     /// Deadband on the turn-around case. `docs/04` quadrant mapping.
     static let hysteresisTurnAroundDegrees = 10.0
     /// Consecutive 10 Hz ticks a new turn band must persist before the belt switches to it, on top of
-    /// the boundary hysteresis. Smooths single-frame heading spikes; ~300 ms, short enough that a real
-    /// turn still feels immediate. Navigation only: the hazard tiers preempt this and stay instant.
+    /// the boundary hysteresis. This is the dwell for a small adjacent nudge, the resistance against
+    /// wobble; ~300 ms. Navigation only: the hazard tiers preempt this and stay instant.
     static let navCueDwellTicks = 3
+    /// Dwell for a clear, larger correction (a swing past `navCueEscalationDegrees`). One tick quicker
+    /// than `navCueDwellTicks` so a real turn takes agency, ~200 ms. Floored at 2, so even a sharp
+    /// swing or U-turn still needs two ticks and a single-frame heading spike cannot commit.
+    static let navCueTurnDwellTicks = 2
+    /// Swing between the held band and the candidate band (degrees) above which a band change counts
+    /// as a real turn rather than a small nudge, so it commits on the shorter `navCueTurnDwellTicks`.
+    /// 60° is one full quadrant step, so an adjacent nudge stays on the slower dwell.
+    static let navCueEscalationDegrees = 60.0
     /// Default tap travel distance, LC2 byte 2. `docs/03`.
     static let intensityDefault: UInt8 = 192
     /// ESP32 falls back to quiet after this much silence. `docs/03` / `docs/06`, here for reference.
