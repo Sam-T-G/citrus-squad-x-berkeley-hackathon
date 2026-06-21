@@ -135,6 +135,9 @@ final class AppModel {
             guard let self else { return "" }
             return await self.handleVoice(command)
         }
+        // Warm the TLS connection to Anthropic once at launch so the first describe or vision read on
+        // stage skips the handshake. Fire-and-forget; off the safety path; a no-op without a key.
+        Task { await claude.prewarm() }
     }
 
     // MARK: - Link control
@@ -320,18 +323,17 @@ final class AppModel {
         case .tripSummary: return spokenTripSummary()
         case .whereAmI: return await spokenLocation()
         case .describeSurroundings:
-            return await verifiedLine(
-                instruction: "In one short spoken sentence, describe what is ahead for a walker, " +
-                    "prioritizing anything close or in the path.",
-                fallback: spokenSurroundings())
+            // Tier 2 (judgment): Claude reads the scene snapshot, but only when there is something
+            // worth describing, and a local guard plus a grounded fallback keep it honest and fast.
+            return await describeScene()
         case .checkPath:
-            return await verifiedLine(
-                instruction: "In one short spoken sentence, say whether the path ahead is clear and, " +
-                    "if something is in it, which open side to step toward. Prefer a side the scene " +
-                    "marks open. Never send the walker into a blocked side.",
-                fallback: spokenPathCheck())
+            // Tier 0 (instant, on-device): the collision-relevant query. `ObstacleAvoidance` already
+            // computes the safe open side from LiDAR; Claude would only add latency and risk here.
+            return spokenPathCheck()
         case .readSign:
             return await readSign()
+        case .locateEntrance:
+            return await locateEntrance()
         case .recalibrate:
             return calibrate() ? "Recalibrated. Face forward and start walking." : "Hold still, then try again."
         case .connectBelt:
@@ -508,12 +510,13 @@ final class AppModel {
         return "\(vowel ? "an" : "a") \(label)"
     }
 
-    /// A collision-avoidance read of the path for the voice agent. It fuses what the camera sees in
-    /// the path (the YOLO object or person, its side and distance) with what the LiDAR says about the
-    /// three bands, and runs the same `ObstacleAvoidance` logic the belt uses to find the open side.
-    /// The returned line already names the safe direction, so the agent can suggest a step left, a
-    /// step right, or a stop without ever sending the wearer into a blocked side. Additive only: this
-    /// reads the perception state, it never changes the belt's LiDAR reflex (see `docs/12` §4).
+    /// A descriptive read of the path for the voice agent. It fuses what the camera sees (the object or
+    /// person, its side) with what the LiDAR says about the three bands, and runs the same
+    /// `ObstacleAvoidance` geometry the belt uses to find which side has more room. It describes the
+    /// situation and which side looks more open; it does not tell the wearer to step or stop. The
+    /// wearer, their cane, and their own judgment make that call. This is deliberate: a phone-LiDAR
+    /// read is advisory context (it cannot see curbs, drop-offs, stairs, head height, or glass), so it
+    /// informs and never commands. Additive only; it never changes the belt cue (see `docs/12` §4).
     private func spokenPathCheck() -> String {
         guard depth.isRunning else {
             return "I can't watch the path right now. Turn the camera on so I can check for obstacles."
@@ -529,28 +532,42 @@ final class AppModel {
 
         switch directive {
         case .stop(let meters):
-            let dist = Self.spokenFeet(fromMeters: meters)
-            return "Stop. \(Self.firstCapitalized(what)) is \(dist) ahead and both sides are tight. Hold still, then turn slowly and I'll find an opening."
+            // Describe the box-in; the wearer decides to stop or turn. No imperative, and a coarse
+            // proximity band rather than a precise foot-count, since phone LiDAR is advisory context,
+            // not a precise authority on a safety obstacle.
+            return "Caution, \(what) is \(Self.spokenProximity(fromMeters: meters)), and both sides are tight."
         case .steer(let openMask, let meters):
             let open = openMask.contains(.left) ? "left" : "right"
-            let dist = Self.spokenFeet(fromMeters: meters)
             let place = whereText.map { " \($0)" } ?? " ahead"
-            return "Heads up, \(what)\(place) about \(dist). The \(open) side is open, so ease to your \(open) to go around it."
+            // Name what is there and state where the room is as spatial fact, not advice. The wearer,
+            // their cane, and their judgment decide how to move.
+            return "Heads up, \(what)\(place), \(Self.spokenProximity(fromMeters: meters)). There's more room on your \(open)."
         case .clear:
             // LiDAR sees no blockage in front, but the camera may still flag a person or object so the
             // agent can give a soft heads-up before it becomes a real obstacle.
             if let hazard, hazard.distanceMeters > 0 {
-                let dist = Self.spokenFeet(fromMeters: hazard.distanceMeters)
                 let place = whereText.map { " \($0)" } ?? " ahead"
-                return "\(Self.firstCapitalized(what))\(place) about \(dist), but your path is open. Keep going and stay ready to ease aside if it gets closer."
+                return "\(Self.firstCapitalized(what))\(place), \(Self.spokenProximity(fromMeters: hazard.distanceMeters)), and the way ahead looks open."
             }
-            return "Your path ahead is clear."
+            return "The way ahead looks clear."
         }
     }
 
-    /// A spoken distance in feet from meters, like "about 8 feet".
+    /// A spoken distance in feet from meters, like "about 8 feet". For route distances, which are real
+    /// map measurements the wearer can trust at face value.
     static func spokenFeet(fromMeters meters: Double) -> String {
         "about \(roundedFeet(feet(fromMeters: meters))) feet"
+    }
+
+    /// A coarse proximity band for an obstacle, not a precise number. Phone LiDAR is advisory context
+    /// (it cannot see curbs, drop-offs, stairs, or glass), so an obstacle read is spoken as "close" or
+    /// "a few steps away" rather than a foot-count that would read as precise authority the cane owns.
+    static func spokenProximity(fromMeters meters: Double) -> String {
+        guard meters > 0 else { return "close" }
+        if meters <= 1.0 { return "very close" }
+        if meters <= 2.0 { return "close" }
+        if meters <= 3.5 { return "a few steps away" }
+        return "farther off"
     }
 
     /// Which side a hazard mask sits on, phrased for speech.
@@ -565,55 +582,129 @@ final class AppModel {
         text.isEmpty ? text : text.prefix(1).uppercased() + text.dropFirst()
     }
 
-    // MARK: - Claude reasoning tier (off the safety path)
+    // MARK: - Claude reasoning tier (Tier 2/3, off the safety path)
+    //
+    // Latency tiers, lowest first. Deepgram is the voice for all of them; Claude is reached only where
+    // judgment (Tier 2) or vision (Tier 3) earns its latency. Everything else answers instantly from
+    // on-device state (Tier 0) or a small geocode/route call (Tier 1) and never touches this section.
+    // See `ios/VOICE-AI-PIPELINE.md`.
 
-    /// Draft a spoken line with the fast model, verify it against the same structured snapshot with the
-    /// stricter model, and speak it only if the verifier approves. Any miss (key absent, a failed call,
-    /// a rejected line) falls back to the hardcoded, sensor-grounded string the caller passed in. This
-    /// is the V3 draft-and-verify pass `docs/14` planned; the safety check lives on our side, never in
-    /// the hosted think model. Additive only: the belt already tapped from geometry, this only speaks.
-    private func verifiedLine(instruction: String, fallback: String) async -> String {
-        guard await claude.isConfigured else { return fallback }
-        let xml = perceptionSnapshot().xmlForClaude()
-        guard let draft = await claude.draftLine(systemPrompt: Self.reasoningContract,
-                                                 snapshotXML: xml, instruction: instruction),
-              let verdict = await claude.verify(systemPrompt: Self.reasoningContract,
-                                                snapshotXML: xml, draft: draft),
-              verdict.approved else {
-            return fallback
-        }
-        let phrase = verdict.phrase.trimmingCharacters(in: .whitespacesAndNewlines)
-        return phrase.isEmpty ? fallback : phrase
+    /// Tier 2 (judgment): describe the scene. Three gates keep it fast and honest. First, if there is
+    /// nothing notable in range, the grounded "clear" line is already the whole answer, so Claude is
+    /// skipped entirely. Otherwise one fast-model call drafts a line over the structured snapshot under
+    /// a tight voice timeout. Then a local guard (no second API call) rejects any line that claims a
+    /// clear path the LiDAR contradicts. Any miss falls back to the sensor-grounded string.
+    private func describeScene() async -> String {
+        let grounded = spokenSurroundings()
+        let snapshot = perceptionSnapshot()
+        guard snapshot.isInformative, await claude.isConfigured else { return grounded }
+        let line = await claude.draftLine(
+            systemPrompt: Self.reasoningContract,
+            snapshotXML: snapshot.xmlForClaude(),
+            instruction: "In one short spoken sentence, describe what is ahead for a walker, " +
+                "prioritizing anything close or in the path.",
+            timeout: CitrusSquadConfig.claudeVoiceTimeoutSeconds)
+        guard let line, SpokenLineGuard.isConsistent(line, with: snapshot) else { return grounded }
+        return line
     }
 
-    /// Read a sign or printed text the wearer points the camera at. Pull-based: grab one frame from the
-    /// running ARSession (no second camera, never a stream), hand it to Claude vision, speak the read.
-    /// Off the safety path and informational only. Returns a spoken reason when the camera is off or the
-    /// read fails, never a guess.
+    /// Tier 3 (vision): read a sign, label, or printed text the wearer points the camera at. This is
+    /// where Claude genuinely helps a blind traveler (reading the world's text is a top community need),
+    /// so it is built to be honest about it. The documented failure is the camera aimed blind plus a
+    /// model that guesses; `guidedRead` coaches the aim and hedges the read instead.
     private func readSign() async -> String {
-        guard await claude.isConfigured else {
-            return "Reading text isn't set up right now."
-        }
-        guard depth.isRunning, let jpeg = depth.grabFrameJPEG() else {
-            return "I can't see anything right now. Turn the camera on and point it at the text."
-        }
-        let line = await claude.describeFrame(
-            systemPrompt: Self.visionContract,
-            instruction: "Read any sign, label, number, or printed text in this frame and say it back " +
-                "in one short spoken sentence. If you cannot make out any text, say so plainly.",
-            imageJPEG: jpeg)
-        return line ?? "I couldn't read any text. Hold the camera steady on the sign and try again."
+        await guidedRead(
+            instruction: "Read any sign, label, number, or printed text in this frame. Report only what " +
+                "is actually readable.",
+            cameraOff: "I can't see anything right now. Turn the camera on and point it at the text.")
     }
 
-    /// The rules for the vision read. The frame is the only source; the model must report what it can
-    /// actually read and say so when it cannot, never inventing text. Informational, never a cue.
-    static let visionContract = """
-    You are the eyes of a blind walker, given one photo from a chest-mounted camera. Read the sign, \
-    label, number, or printed text the walker asked about and say it back. Rules:
-    - Report only text you can actually read in the image. If it is blurry, cut off, or absent, say you \
-    cannot read it rather than guessing.
-    - One short calm sentence, meant to be heard, not read. No preamble.
-    - This is informational only. Never give a navigation, steering, or safety instruction.
+    /// Tier 3 (vision): find a building entrance or door and say roughly which way it is. Coarse
+    /// direction only and never a distance, because distance is exactly what vision models get wrong,
+    /// and a confident wrong distance walks a blind wearer into something. Informational, never a cue.
+    private func locateEntrance() async -> String {
+        await guidedRead(
+            instruction: "Look for a building entrance or door. If you clearly see one, say only which " +
+                "coarse direction it is (ahead, to your left, or to your right). Do not state a distance. " +
+                "If you do not clearly see an entrance, say so.",
+            cameraOff: "I can't see anything right now. Turn the camera on and point it where you want me to look.")
+    }
+
+    /// The shared honest-read path. Grab one frame, get a structured read, and turn it into a spoken
+    /// line that coaches the aim when the frame is no good and hedges when the read is uncertain or
+    /// high-stakes. The "re-aim loop" is the wearer hearing the cue and asking again, which fits the
+    /// one-answer-per-turn voice model and never fakes an interim. Off the safety path, informational.
+    private func guidedRead(instruction: String, cameraOff: String) async -> String {
+        guard await claude.isConfigured else { return "Reading isn't set up right now." }
+        guard depth.isRunning, let jpeg = depth.grabFrameJPEG() else { return cameraOff }
+        guard let read = await claude.read(systemPrompt: Self.readContract, instruction: instruction,
+                                           imageJPEG: jpeg,
+                                           timeout: CitrusSquadConfig.claudeVisionTimeoutSeconds) else {
+            return "I couldn't read that. Hold steady and try again."
+        }
+        return Self.composeRead(read)
+    }
+
+    /// Turn a structured read into the spoken line, applying the honesty rules from the research:
+    /// coach the aim when the frame was no good, and add a verification hedge on an uncertain or
+    /// high-stakes read so a confident wrong answer never goes unchallenged to someone who cannot see
+    /// to catch it.
+    static func composeRead(_ read: VisionRead) -> String {
+        let hint = read.aimHint.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard read.legible else {
+            // Not readable: the aim cue is the answer. The wearer re-aims and asks again.
+            let line = read.spokenLine.trimmingCharacters(in: .whitespacesAndNewlines)
+            if hint.isEmpty {
+                return line.isEmpty ? "I can't make it out. Move closer or into better light, then ask again." : line
+            }
+            let lead = line.isEmpty ? "I can't quite read it." : line
+            return "\(lead) \(firstCapitalized(hint))."
+        }
+        // Strip any distance the model stated against the contract before a word is spoken.
+        let line = SpokenLineGuard.withoutVisionDistance(
+            read.spokenLine.trimmingCharacters(in: .whitespacesAndNewlines))
+        guard !line.isEmpty else { return "I couldn't read that. Hold steady and try again." }
+
+        // Normalize confidence toward doubt: anything that isn't clearly "high" is treated as less sure.
+        let confident = read.confidence.lowercased() == "high"
+
+        // A high-stakes read is ALWAYS hedged, even when the model is sure. A confident, fluent, wrong
+        // read of a med name or a door number is the exact case a blind user cannot catch, so the
+        // model's own confidence is not allowed to suppress the nudge; it only softens the wording.
+        if read.highStakes {
+            return confident
+                ? line + " Worth double-checking, since this matters."
+                : line + " I'm not fully sure I read that right, so double-check it with someone you trust before you rely on it."
+        }
+        if !confident {
+            return line + " I'm not certain, though. Move closer or into better light and ask again to be sure."
+        }
+        return line
+    }
+
+    /// The rules for an honest camera read. Every line here is a guard against the documented ways
+    /// vision models fail a blind user: guessing text, inventing a distance, and sounding certain when
+    /// they are not. The wearer aimed this frame without being able to see it, so the model's other job
+    /// is to coach the aim rather than answer a bad frame.
+    static let readContract = """
+    You are the eyes of a blind person, given one photo from a chest-mounted phone camera they aimed \
+    without being able to see it. Answer what they asked and be honest about what you can and cannot \
+    see.
+    - Report only what you can actually make out. Never guess a letter, number, word, object, or \
+    direction. If the thing is cut off, blurry, glared, too far, or out of frame, treat it as not \
+    readable.
+    - If you cannot answer well, set legible to false and put one short spoken re-aim cue in aimHint \
+    ("tilt up", "move closer", "too dark, find more light", "pan left"). Otherwise set legible to true \
+    and leave aimHint empty.
+    - spokenLine is one short sentence a blind listener hears: the text or answer when you can read it, \
+    or a brief note that you cannot yet.
+    - For directions, give only a coarse side (ahead, left, right). Never state a distance in feet or \
+    meters; you cannot judge distance reliably and a wrong number is dangerous.
+    - Set highStakes to true when a misread would cause harm: medication, dosage, money or \
+    denominations, an address, a room or door number, a name, an expiry date.
+    - confidence is high only when the read is clear and unambiguous, medium when mostly clear, low \
+    when uncertain.
+    Keep every field terse. This is informational only, never a navigation or safety instruction.
     """
 
     /// The scene Claude reasons over, assembled from the LiDAR bands, the current fused hazard, and the

@@ -44,6 +44,23 @@ struct PerceptionSnapshot: Sendable {
     var route: RouteContext?
     var confidence: Confidence
 
+    // MARK: - Predicates
+
+    /// Something worth handing to Claude: a tracked object in any band, or a LiDAR return inside the
+    /// belt's proximity range. When this is false the scene is empty and the grounded "clear" line is
+    /// already the whole answer, so the describe path skips the model call entirely.
+    var isInformative: Bool {
+        [left, center, right].contains { !$0.objects.isEmpty } || hasCloseObstacle
+    }
+
+    /// Any band has a LiDAR return inside the proximity range. `SpokenLineGuard` uses this to refuse a
+    /// "clear path" claim the sensors contradict.
+    var hasCloseObstacle: Bool {
+        [left, center, right].contains {
+            $0.nearestMeters > 0 && $0.nearestMeters <= CitrusSquadConfig.proximityThresholdMeters
+        }
+    }
+
     // MARK: - Assembly
 
     /// Build the snapshot from the state the app already holds. Pure, so it is unit-testable without a

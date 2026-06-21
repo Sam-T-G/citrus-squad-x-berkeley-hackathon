@@ -29,11 +29,11 @@ actor ClaudeClient {
     /// Draft one spoken line from the structured scene, fast and cheap. The line is a candidate only;
     /// it is never spoken until `verify` checks it against the same snapshot. Returns `nil` on any
     /// failure so the caller speaks its grounded fallback.
-    func draftLine(systemPrompt: String, snapshotXML: String,
-                   instruction: String) async -> String? {
+    func draftLine(systemPrompt: String, snapshotXML: String, instruction: String,
+                   timeout: TimeInterval = CitrusSquadConfig.claudeTimeoutSeconds) async -> String? {
         let user = "\(snapshotXML)\n\n\(instruction)"
         let request = Request(model: CitrusSquadConfig.claudeDraftModel,
-                              system: systemPrompt, userText: user)
+                              system: systemPrompt, userText: user, timeout: timeout)
         return await firstText(for: request)
     }
 
@@ -68,10 +68,36 @@ actor ClaudeClient {
     /// spoken line, or `nil` on failure.
     func describeFrame(systemPrompt: String, instruction: String,
                        imageJPEG: Data,
-                       model: String = CitrusSquadConfig.claudeVisionModel) async -> String? {
+                       model: String = CitrusSquadConfig.claudeVisionModel,
+                       timeout: TimeInterval = CitrusSquadConfig.claudeTimeoutSeconds) async -> String? {
         let request = Request(model: model, system: systemPrompt,
-                              userText: instruction, imageJPEG: imageJPEG)
+                              userText: instruction, imageJPEG: imageJPEG, timeout: timeout)
         return await firstText(for: request)
+    }
+
+    /// The honest read: send one frame and get back structured output instead of free text, so the app
+    /// knows not just what the line says but whether the model could actually read it, how sure it is,
+    /// whether the read is high-stakes, and a re-aim hint when the frame is no good. This is what lets
+    /// the reader coach a blind user who aimed the camera blind, and hedge on a read that could harm
+    /// them, instead of confidently speaking a guess. Returns `nil` on any failure.
+    func read(systemPrompt: String, instruction: String, imageJPEG: Data,
+              model: String = CitrusSquadConfig.claudeVisionModel,
+              timeout: TimeInterval = CitrusSquadConfig.claudeTimeoutSeconds) async -> VisionRead? {
+        let request = Request(model: model, system: systemPrompt, userText: instruction,
+                              imageJPEG: imageJPEG, jsonSchema: VisionRead.schema, timeout: timeout)
+        guard let json = await firstText(for: request), let data = json.data(using: .utf8) else { return nil }
+        return try? JSONDecoder().decode(VisionRead.self, from: data)
+    }
+
+    // MARK: - Pre-warm
+
+    /// Open and warm the TLS connection to Anthropic with one tiny throwaway request, so the first real
+    /// describe or vision read does not pay the handshake. Fire-and-forget at launch; a failure is
+    /// ignored. Costs a negligible request, worth it for first-call latency on stage.
+    func prewarm() async {
+        guard isConfigured else { return }
+        _ = await firstText(for: Request(model: CitrusSquadConfig.claudeDraftModel,
+                                         system: "warmup", userText: "hi", maxTokens: 1, timeout: 4))
     }
 
     // MARK: - Request
@@ -87,6 +113,7 @@ actor ClaudeClient {
         var imageJPEG: Data?
         var jsonSchema: [String: Any]?
         var maxTokens = CitrusSquadConfig.claudeMaxTokens
+        var timeout: TimeInterval = CitrusSquadConfig.claudeTimeoutSeconds
     }
 
     /// Build, send, and pull the first text block out of the response. Returns `nil` on a missing key,
@@ -104,23 +131,43 @@ actor ClaudeClient {
 
         var urlRequest = URLRequest(url: endpoint)
         urlRequest.httpMethod = "POST"
-        urlRequest.timeoutInterval = CitrusSquadConfig.claudeTimeoutSeconds
+        urlRequest.timeoutInterval = request.timeout
         urlRequest.setValue(apiKey, forHTTPHeaderField: "x-api-key")
         urlRequest.setValue(Self.apiVersion, forHTTPHeaderField: "anthropic-version")
         urlRequest.setValue("application/json", forHTTPHeaderField: "content-type")
         urlRequest.httpBody = body
 
-        do {
-            let (data, response) = try await URLSession.shared.data(for: urlRequest)
-            guard let http = response as? HTTPURLResponse else { return nil }
-            guard http.statusCode == 200 else {
-                log.error("claude HTTP \(http.statusCode, privacy: .public)")
+        // Hard wall-clock bound. `URLRequest.timeoutInterval` is only an idle (between-bytes) timeout,
+        // and `URLSession.shared` lets a resource run for days, so a response that trickles bytes could
+        // hold the spoken turn far past the tier's budget. Race the request against the deadline and
+        // take whichever finishes first; the loser is cancelled. So the budget is real, not advisory.
+        let req = urlRequest
+        let budget = request.timeout
+        let log = self.log
+        return await withTaskGroup(of: String?.self) { group -> String? in
+            group.addTask {
+                do {
+                    let (data, response) = try await URLSession.shared.data(for: req)
+                    guard let http = response as? HTTPURLResponse else { return nil }
+                    guard http.statusCode == 200 else {
+                        log.error("claude HTTP \(http.statusCode, privacy: .public)")
+                        return nil
+                    }
+                    return Self.decodeFirstText(data)
+                } catch {
+                    if !(error is CancellationError) {
+                        log.error("claude request failed: \(error.localizedDescription, privacy: .public)")
+                    }
+                    return nil
+                }
+            }
+            group.addTask {
+                try? await Task.sleep(for: .seconds(budget))
                 return nil
             }
-            return Self.decodeFirstText(data)
-        } catch {
-            log.error("claude request failed: \(error.localizedDescription, privacy: .public)")
-            return nil
+            let first = await group.next() ?? nil
+            group.cancelAll()
+            return first
         }
     }
 
@@ -178,6 +225,41 @@ actor ClaudeClient {
             }
         }
         return nil
+    }
+}
+
+/// A structured camera read, the shape that lets the reader be honest with a blind user. Reading text
+/// in the wild is where AI genuinely helps, and the documented failure is the camera that was aimed
+/// blind plus the model that guesses confidently. These fields are the antidote: `legible` and
+/// `aimHint` drive the re-aim coaching, `confidence` and `highStakes` drive the verification hedge.
+struct VisionRead: Decodable, Sendable {
+    /// One short sentence to speak: the text or answer when readable, or a brief "I can't read it yet".
+    let spokenLine: String
+    /// True only when the model could actually read or answer from the frame.
+    let legible: Bool
+    /// When not legible, one short spoken re-aim cue ("tilt up", "move closer", "find more light").
+    /// Empty when legible.
+    let aimHint: String
+    /// `low` / `medium` / `high`. Honest, not flattering: `high` only for a clear, unambiguous read.
+    let confidence: String
+    /// True when a misread would cause harm (medication, money, an address or door number, a name, an
+    /// expiry date), so the reader adds a verification hedge before the wearer acts on it.
+    let highStakes: Bool
+
+    /// The schema handed to `output_config.format`. All fields required, no extras.
+    static var schema: [String: Any] {
+        [
+            "type": "object",
+            "properties": [
+                "spokenLine": ["type": "string"],
+                "legible": ["type": "boolean"],
+                "aimHint": ["type": "string"],
+                "confidence": ["type": "string", "enum": ["low", "medium", "high"]],
+                "highStakes": ["type": "boolean"],
+            ],
+            "required": ["spokenLine", "legible", "aimHint", "confidence", "highStakes"],
+            "additionalProperties": false,
+        ]
     }
 }
 

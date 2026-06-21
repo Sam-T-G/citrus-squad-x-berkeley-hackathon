@@ -78,9 +78,17 @@ enum CitrusSquadConfig {
     /// Output cap for the spoken tier. One sentence of speech is well under this; it only guards
     /// against a runaway response, and keeps the call non-streaming and fast.
     static let claudeMaxTokens = 320
-    /// How long the spoken tier waits on Claude before giving up and speaking the grounded fallback.
+    /// Default ceiling on a Claude call before the caller gives up and speaks the grounded fallback.
     /// The belt already tapped from on-device geometry, so a slow line is dropped, never blocking.
+    /// Used by the manual HUD buttons, which can afford to wait a little longer than the live voice.
     static let claudeTimeoutSeconds = 6.0
+    /// Tight ceiling for the live voice describe path (Tier 2). The Deepgram agent is holding the turn
+    /// open while this runs, so it must come back fast or fall back to the instant grounded line.
+    static let claudeVoiceTimeoutSeconds = 2.5
+    /// Ceiling for the live voice vision reads (Tier 3: read a sign, find an entrance). Longer than the
+    /// describe budget because a vision read is a deliberate "look for me" the wearer waits a beat for,
+    /// and a real read beats a fast "I couldn't see it."
+    static let claudeVisionTimeoutSeconds = 5.0
 
     // Obstacle avoidance (LiDAR safety layer, sits above navigation, below the person tier)
     /// Consecutive 10 Hz ticks an obstacle must persist before the avoidance cue activates.
