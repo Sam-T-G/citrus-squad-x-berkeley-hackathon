@@ -97,12 +97,13 @@ actor VoiceSession {
     private func configureAudioSession() throws {
         let audio = AVAudioSession.sharedInstance()
         do {
-            // .videoChat keeps the echo cancellation that .voiceChat gives, but routes to the loud
-            // speaker instead of the earpiece. The explicit override forces the built-in speaker even
-            // if a call-style route tries to grab it.
+            // Plain .default mode (not .voiceChat/.videoChat) stops iOS from treating this as a phone
+            // call and routing to the quiet earpiece. We give up hardware echo cancellation, but the
+            // agentSpeaking mic-mute already keeps the agent from hearing itself. Force the loud
+            // bottom speaker explicitly.
             try audio.setCategory(.playAndRecord,
-                                  mode: .videoChat,
-                                  options: [.duckOthers, .defaultToSpeaker])
+                                  mode: .default,
+                                  options: [.defaultToSpeaker, .duckOthers])
             try audio.setActive(true)
             try? audio.overrideOutputAudioPort(.speaker)
         } catch {
