@@ -1,12 +1,17 @@
 ---
 name: project-handoff
-description: HANDOFF.md exists at repo root and must stay current as CV work changes
+description: README.md and HANDOFF.md must both be updated every commit on cole/computer-vision
 metadata:
-  type: project
+  type: feedback
 ---
 
-`HANDOFF.md` lives at the repo root. It is the primary handoff between Cole (CV) and Josh (iOS/LiDAR/haptics).
+Update `README.md` and `HANDOFF.md` at the repo root every time a meaningful commit is made on `cole/computer-vision`.
 
-**Why:** Cole asked for a handoff doc that is kept updated. It covers wire protocol, WebSocket endpoints, output JSON schema, depth fusion logic, navigation class list, tuning knobs, and open items.
+**Why:** Cole explicitly asked for this. The README is the public-facing summary of what the CV layer does and plans to do. HANDOFF.md is the integration contract between Cole (Python CV) and Sam (Swift iOS). Both rot fast during a hackathon and need to stay honest.
 
-**How to apply:** Any time the CV layer changes in a way that affects Josh's integration (wire format, output schema, new fields, tuning defaults, new endpoints), update `HANDOFF.md` in the same session. Also update the "Last updated" date at the top.
+**How to apply:**
+- README: update "What is built" and "Planned" sections to reflect current state
+- HANDOFF: move open items to "What is built" as they land; add new open items as they emerge
+- Both: update after every commit, in the same pass as the commit
+
+The "Last updated" line in the HANDOFF CV section should reflect the session date.

@@ -218,10 +218,93 @@ python3 -m pytest tests/ -v
 
 All 17 tests pass. YOLO is mocked so no model download is needed to run tests.
 
+## What is built
+
+| File | Status | What it does |
+|---|---|---|
+| `cv/detection.py` | Done | `DepthFusedDetection` dataclass + `NAVIGATION_CLASSES` filter |
+| `cv/pipeline.py` | Done | YOLOv8n inference + LiDAR depth fusion |
+| `cv/ingest.py` | Done | FastAPI WebSocket server (`/frames` + `/haptics`) |
+| `cv/webcam_test.py` | Done | Local smoke test against laptop webcam |
+| `server.py` | Done | Uvicorn entry point |
+| `tests/` | Done | 17 unit tests, all passing |
+
+## Planned: on-device CoreML (no Wi-Fi)
+
+The Wi-Fi server is a working prototype. The demo target is everything running on the phone.
+
+**Steps:**
+
+1. Export the CoreML model:
+   ```bash
+   python3 -c "from ultralytics import YOLO; YOLO('yolov8n.pt').export(format='coreml')"
+   ```
+   Drag `yolov8n.mlpackage` into the Xcode target.
+
+2. **`ObjectDetectionService.swift`** (Sam's side) — new Swift service that:
+   - Subscribes to frames from `DepthService` via a callback (add `var onFrame: ((ARFrame) -> Void)?` to `DepthService`)
+   - Runs `VNCoreMLRequest` on `ARFrame.capturedImage`
+   - Scales each bounding box from RGB to depth map coordinates (same math as `pipeline.py _fuse`)
+   - Samples inner 50% of the scaled box
+   - Calls `VisionHazardSource.report()` with the nearest threat, `clear()` when nothing in path
+
+3. Wire into `AppModel` (Sam's side): add `let objectDetection = ObjectDetectionService()`, start/stop alongside `DepthService`.
+
+## Planned: collision prediction and action layer
+
+Pure logic on top of raw detections. Fully testable with no sensors.
+
+**New types:**
+
+```swift
+enum ThreatLevel { case none, advisory, warning, urgent }
+
+enum NavigationAction {
+    case clear
+    case stepLeft(paces: Int)
+    case stepRight(paces: Int)
+    case stop
+    case slowDown
+}
+
+struct ObstacleThreat {
+    var label: String
+    var distanceMeters: Double
+    var horizontalNorm: Double   // 0.0 = far left, 1.0 = far right
+    var level: ThreatLevel
+    var action: NavigationAction
+}
+```
+
+**Decision logic in `CollisionPredictor`:**
+
+1. Is it in path? `horizontal_norm` in `[0.35, 0.65]` = dead ahead
+2. How urgent? `< 1.5m` = urgent, `1.5–3m` = warning, `3–5m` = advisory
+3. Which side is clear? Check LiDAR band readings from `DepthService` for open space
+4. Paces to clear: `ceil(clearance_needed / 0.75)` where clearance = object half-width + 0.5m margin
+5. Output: belt tap direction + pace count for audio layer
+
+**Concrete example (pole at 2m, dead center):**
+```
+horizontal_norm = 0.51  → in path
+depth_min_m = 2.0       → warning
+label = "pole"          → static
+left LiDAR band: clear  → step left
+paces = ceil(0.54 / 0.75) = 1
+
+→ StepLeft(paces: 1)
+→ Belt: left tap
+→ Audio: "pole ahead, step left 1 pace"
+```
+
 ## Open items
 
-- [ ] Confirm wire format with iOS sender before first end-to-end test
-- [ ] Decide on RGB resolution (1280x720 vs 1920x1080) and update depth scale math if needed
-- [ ] Test actual depth map resolution from iPhone 15 Pro Max (assumed 256x192)
-- [ ] Tune `confidence_threshold` and `depth_crop_ratio` on real footage
-- [ ] Add a keep-alive / ping-pong to the `/haptics` WebSocket if the controller idles
+- [ ] Implement `ObjectDetectionService.swift` (CoreML + ARKit frame subscription)
+- [ ] Implement `CollisionPredictor.swift` + `NavigationAction.swift` + `ThreatAssessment.swift`
+- [ ] Export `yolov8n.mlpackage` and add to Xcode target
+- [ ] Wire `ObjectDetectionService` into `AppModel`
+- [ ] Confirm ARFrame depth map resolution on iPhone 15 Pro Max (assumed 256x192)
+- [ ] Tune `confidence_threshold` on real footage (currently 0.35)
+- [ ] Tune `depth_crop_ratio` on real footage (currently 0.5)
+- [ ] Confirm wire format between Python server and iOS sender if Wi-Fi path is kept as fallback
+- [ ] Add keep-alive / ping-pong to the `/haptics` WebSocket if the controller idles
