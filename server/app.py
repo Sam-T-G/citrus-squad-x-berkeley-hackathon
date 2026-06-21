@@ -70,6 +70,7 @@ EV_TURN_SLIGHT = 0x20
 EV_TURN_NOW = 0x21
 EV_TURN_AROUND = 0x22
 EV_ARRIVED = 0x23
+EV_FORWARD = 0x24       # on-course / proceed straight
 EV_OBSTACLE = 0x40      # obstacle-near (LiDAR)
 
 # Quadrant mask bits, cardinal layout (matches belt.ino and the iOS QuadrantMask).
@@ -119,6 +120,8 @@ def lc2_to_command(lc2: bytes) -> bytes:
         return b"stop\n"
     if event == EV_TURN_AROUND:
         return b"rotate_left\n"
+    if event == EV_FORWARD:
+        return b"forward\n"
     if mask & MASK_LEFT:
         return b"left\n"
     if mask & MASK_RIGHT:
