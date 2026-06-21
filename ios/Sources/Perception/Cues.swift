@@ -36,7 +36,7 @@ protocol HazardSource: AnyObject {
 /// This is what every output consumes, so the belt, the audio layer, and any logger all see the
 /// exact same decision.
 struct ResolvedCue: Sendable, Equatable {
-    enum Source: String, Sendable { case hazard, turn, idle }
+    enum Source: String, Sendable { case hazard, turn, earlyWarning, idle }
 
     var event: LC2Event
     var mask: QuadrantMask
@@ -44,6 +44,15 @@ struct ResolvedCue: Sendable, Equatable {
     var source: Source
 
     static let idle = ResolvedCue(event: .idle, mask: [], intensity: 0, source: .idle)
+
+    /// The soft pre-LiDAR heads-up from the early-warning tier: a gentle tap on the Front motor for
+    /// an object holding the wearer's heading and looming before LiDAR has a return. It rides the
+    /// existing vision-danger wire event so the firmware needs no new code, but carries the
+    /// `.earlyWarning` source so audio and the UI render it as an advisory rather than a confirmed
+    /// person. Floored intensity per `docs/12`, so it is felt but clearly gentler than a graded
+    /// hazard, and it is arbitrated below the person and LiDAR tiers so it never masks a real cue.
+    static let earlyWarning = ResolvedCue(event: .visionDanger, mask: .front,
+                                          intensity: CitrusSquadConfig.intensityFloor, source: .earlyWarning)
 
     /// Distance-graded tap strength per `docs/12`: closer means a harder tap, floored so it is
     /// always felt. Falls back to the flat default when distance is unknown.

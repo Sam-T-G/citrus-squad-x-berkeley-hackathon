@@ -31,6 +31,11 @@ final class AppModel {
     /// heartbeat. Toggle it off to test pure route cues. See `docs/03-protocol.md` obstacle tier.
     var obstacleCuesEnabled = true
 
+    /// The pre-LiDAR early-warning tier (a soft Front tap for a centered, looming object). Sits below
+    /// the person and LiDAR tiers, so it can never mask a real hazard. On by default; toggle off to
+    /// fall back to the depth-only behavior. See `ios/PERCEPTION-EARLY-WARNING-PLAN.md`.
+    var earlyWarningCuesEnabled = true
+
     /// Pluggable endpoints. Cole's CV is a `HazardSource`; Josh's audio is a `CueSink`. Add more
     /// here and the decide loop fans out to them with no other change.
     let vision = VisionHazardSource()
@@ -380,14 +385,19 @@ final class AppModel {
         depth.visionEnabled = ProcessInfo.processInfo.thermalState.rawValue < ProcessInfo.ThermalState.serious.rawValue
 
         // Hand the early-warning tracker the live turn rate so it can tell a centered obstacle from
-        // the wearer panning the camera. Diagnostics only; this does not enter the cue decision below.
+        // the wearer panning the camera. When the camera tier is dropped (thermal), clear any held
+        // flags so a stale heads-up cannot stick after detection stops.
         depth.latestYawRate = motion.yawRateRadPerSecond
+        if !depth.visionEnabled { interference.clear() }
 
         // Priority stack, highest first: a person in the path (camera) preempts everything; then the
-        // LiDAR obstacle-avoidance layer steers around what is ahead; navigation rides underneath.
+        // LiDAR obstacle-avoidance layer steers around what is ahead; then the pre-LiDAR early-warning
+        // heads-up; navigation rides underneath. Each lower tier only fires when the ones above are
+        // quiet, so the soft heads-up can never delay or mask a confirmed person or obstacle cue.
         let turn = currentTurnCue()
         let person = vision.currentHazard
         let avoidance = obstacleCuesEnabled ? avoidanceCue() : nil
+        let earlyWarning = earlyWarningCuesEnabled ? earlyWarningCue() : nil
 
         let decided: ResolvedCue
         if let person {
@@ -397,6 +407,8 @@ final class AppModel {
                                   source: .hazard)
         } else if let avoidance {
             decided = avoidance
+        } else if let earlyWarning {
+            decided = earlyWarning
         } else if let turn {
             decided = ResolvedCue(event: turn.event,
                                   mask: turn.mask,
@@ -447,6 +459,15 @@ final class AppModel {
 
     private static func fmt(_ meters: Double) -> String {
         meters < 0 ? "—" : String(format: "%.2f", meters)
+    }
+
+    /// The soft pre-LiDAR heads-up, or nil when nothing is on a collision course. Fires whenever the
+    /// bearing tracker is holding a flag (a centered, looming object). The flag already carries the
+    /// settle discipline, so this needs no debounce of its own; it is gated below the person and LiDAR
+    /// tiers in `tick`, so it only reaches the belt when the path is otherwise quiet.
+    private func earlyWarningCue() -> ResolvedCue? {
+        guard interference.active != nil else { return nil }
+        return .earlyWarning
     }
 
     /// The turn cue for the current drive mode, or nil.

@@ -13,7 +13,13 @@ enum Feedback {
         UINotificationFeedbackGenerator().notificationOccurred(.success)
     }
 
-    @MainActor static func cueChanged(to event: LC2Event) {
+    @MainActor static func cueChanged(to event: LC2Event, source: ResolvedCue.Source = .hazard) {
+        // The early-warning tier rides the vision-danger event but is a soft advisory, so it mirrors
+        // as a light tap, not the warning buzz a confirmed hazard gets.
+        if source == .earlyWarning {
+            UIImpactFeedbackGenerator(style: .light).impactOccurred()
+            return
+        }
         switch event {
         case .arrived:
             UINotificationFeedbackGenerator().notificationOccurred(.success)
