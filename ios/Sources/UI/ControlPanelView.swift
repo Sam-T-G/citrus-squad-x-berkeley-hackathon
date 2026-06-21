@@ -112,6 +112,7 @@ struct ControlPanelView: View {
             Picker("Mode", selection: mode) {
                 Text("Bench").tag(AppModel.DriveMode.bench)
                 Text("Simulate").tag(AppModel.DriveMode.simulate)
+                Text("Live").tag(AppModel.DriveMode.live)
             }
             .pickerStyle(.segmented)
 
@@ -119,19 +120,32 @@ struct ControlPanelView: View {
             LabeledRow("Resolved cue", resolvedText)
             if model.mode == .simulate {
                 LabeledRow("Sim segment", "\(model.simulator.segmentIndex)")
+            }
+            if model.isDriving {
                 LabeledRow("Distance to turn", model.route.distanceToNext < 0
                     ? "—"
                     : String(format: "%.1f m", model.route.distanceToNext))
+                LabeledRow("Distance left", model.route.remaining < 0
+                    ? "—"
+                    : String(format: "%.0f m", model.route.remaining))
+            }
+            if model.mode == .live, let fix = model.location.location {
+                LabeledRow("GPS accuracy", String(format: "±%.0f m", fix.horizontalAccuracy))
             }
 
             HStack {
                 Button("Load demo route") { model.loadDemoRoute() }
                     .buttonStyle(.bordered)
-                if model.simulator.isRunning {
-                    Button("Stop sim") { model.stopSimulation() }.buttonStyle(.bordered)
+                if model.isDriving {
+                    Button("Stop") { model.stopDriving() }.buttonStyle(.bordered)
                 } else {
                     Button("Run sim") { model.startSimulation() }.buttonStyle(.borderedProminent)
                 }
+            }
+            if !model.isDriving {
+                Button("Walk (live GPS)") { model.startLiveWalk() }
+                    .buttonStyle(.bordered)
+                    .disabled(model.route.path.count < 2 || model.location.location == nil)
             }
 
             DisclosureGroup("Live Google Maps") {

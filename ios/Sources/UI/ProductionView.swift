@@ -111,10 +111,15 @@ struct ProductionView: View {
             }
             HStack(spacing: 12) {
                 bigButton("Load route", tint: .gray) { model.loadDemoRoute() }
-                if model.simulator.isRunning {
-                    bigButton("Stop", tint: .gray) { model.stopSimulation() }
-                } else {
-                    bigButton("Run route", tint: .accentColor) { model.startSimulation() }
+                if model.isDriving {
+                    bigButton("Stop", tint: .gray) { model.stopDriving() }
+                }
+            }
+            if !model.isDriving {
+                HStack(spacing: 12) {
+                    bigButton("Run sim", tint: .accentColor) { model.startSimulation() }
+                    bigButton("Walk GPS", tint: .accentColor) { model.startLiveWalk() }
+                        .disabled(model.route.path.count < 2 || model.location.location == nil)
                 }
             }
             Text(model.routeStatus)
@@ -152,11 +157,19 @@ struct ProductionView: View {
                 ? ("Turn right", "arrow.turn.up.right", .blue)
                 : ("Turn left", "arrow.turn.up.left", .blue)
         case .turnAround:
-            return ("Turn around", "arrow.uturn.down", .blue)
+            // The avoidance layer reuses turn-around as a full-stop reorient; show it as a stop.
+            return cue.source == .hazard
+                ? ("Stop", "hand.raised.fill", .orange)
+                : ("Turn around", "arrow.uturn.down", .blue)
         case .arrived:
             return ("Arrived", "checkmark.circle.fill", .green)
-        case .obstacleNear, .visionDanger:
+        case .obstacleNear:
+            // Avoidance steers toward the open side; show which way to go.
+            if cue.mask.contains(.left) { return ("Obstacle, go left", "arrow.turn.up.left", .orange) }
+            if cue.mask.contains(.right) { return ("Obstacle, go right", "arrow.turn.up.right", .orange) }
             return ("Obstacle", "exclamationmark.triangle.fill", .orange)
+        case .visionDanger:
+            return ("Person ahead", "figure.stand", .orange)
         }
     }
 }

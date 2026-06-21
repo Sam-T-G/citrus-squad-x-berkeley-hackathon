@@ -73,13 +73,14 @@ struct NavigationOverlay: View {
         .accessibilityElement(children: .combine)
     }
 
-    private var hasRoute: Bool { model.simulator.waypoints.count >= 2 }
+    private var hasRoute: Bool { model.route.path.count >= 2 }
 
+    /// Meters left to the destination. Prefers the route engine's live figure (set while driving in
+    /// either simulate or live-GPS mode); falls back to measuring from the current position.
     private var remainingMeters: Double {
+        if model.route.remaining >= 0 { return model.route.remaining }
         guard let position = currentPosition else { return 0 }
-        return RouteMath.remainingDistance(from: position,
-                                           along: model.simulator.waypoints,
-                                           segmentIndex: model.simulator.segmentIndex)
+        return RouteMath.remainingDistance(from: position, along: model.route.path, segmentIndex: 0)
     }
 
     private var remainingText: String {
@@ -95,10 +96,6 @@ struct NavigationOverlay: View {
         return minutes <= 1 ? "~1 min" : "~\(minutes) min"
     }
 
-    /// Where the wearer is: the simulated walk drives the demo, live GPS when there is a fix.
-    private var currentPosition: GeoPoint? {
-        if let simulated = model.simulator.position { return simulated }
-        guard let live = model.location.location else { return nil }
-        return GeoPoint(latitude: live.coordinate.latitude, longitude: live.coordinate.longitude)
-    }
+    /// Where the wearer is, per the active drive mode (simulated walker or live GPS fix).
+    private var currentPosition: GeoPoint? { model.navPosition }
 }

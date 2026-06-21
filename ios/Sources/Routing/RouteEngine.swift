@@ -38,8 +38,10 @@ enum QuadrantMapper {
 /// settable value, so the operator can bench-test the full heading-to-cue path: calibrate, set a
 /// target bearing, rotate the phone, and watch the cue change and transmit.
 ///
-/// Live Maps polyline playback (the M5 path in `docs/04-phone-side.md`) drops in here later: feed
-/// real maneuver bearings into `targetRouteBearing` from a cached route instead of the slider.
+/// Route mode follows the dense Maps polyline by pure pursuit: project the wearer onto the path,
+/// aim at a look-ahead point a few meters ahead on it, and cue toward that bearing every tick. The
+/// drawn line and the belt then steer the same path, rounding sidewalk corners instead of cutting
+/// straight to the destination.
 @MainActor
 @Observable
 final class RouteEngine {
@@ -48,10 +50,13 @@ final class RouteEngine {
     private(set) var bodyHeading: Double = 0
     private(set) var currentCue: Cue?
 
-    // Route mode: a cached list of maneuvers walked by GPS or the simulator.
-    private(set) var maneuvers: [Maneuver] = []
-    private(set) var activeIndex = 0
-    private(set) var distanceToNext: Double = -1
+    // Route mode: the dense polyline the wearer follows, walked by GPS or the simulator.
+    private(set) var path: [GeoPoint] = []
+    private(set) var pivots: [Int] = []                 // corner vertices in `path`
+    private(set) var maneuvers: [Maneuver] = []         // one per pivot plus the final destination
+    private(set) var activeIndex = 0                     // pivots already passed
+    private(set) var distanceToNext: Double = -1         // meters to the next pivot (drives the banner)
+    private(set) var remaining: Double = -1              // meters left to the destination
 
     /// The true-north bearing the wearer should be walking toward. Set from the bench slider now,
     /// from the cached Maps route later.
@@ -71,39 +76,99 @@ final class RouteEngine {
 
     // MARK: - Route mode
 
-    func loadRoute(_ maneuvers: [Maneuver]) {
-        self.maneuvers = maneuvers
+    /// Load the dense route polyline and derive its corners. The maneuver list (one per pivot plus
+    /// the destination) is kept so the banner and voice can say how many turns remain.
+    func loadPath(_ path: [GeoPoint]) {
+        self.path = path
+        self.pivots = RouteMath.pivots(from: path)
+        self.maneuvers = Self.maneuvers(forPivots: pivots, in: path)
         activeIndex = 0
         distanceToNext = -1
+        remaining = -1
         currentCue = nil
     }
 
-    /// Decide the cue from a position and heading walking the cached route. Used by live GPS and by
-    /// the simulator. Stages a cue only once within the turn-commit distance of the active maneuver,
-    /// emits `arrived` at the final one, and advances past a maneuver once it is reached.
-    func updateRoute(location: GeoPoint, phoneHeading: Double) {
-        bodyHeading = Bearing.bodyHeading(phoneTrueHeading: phoneHeading, calibrationOffset: calibrationOffset)
-        guard activeIndex < maneuvers.count else {
+    /// Backwards-compatible shim: callers that still hand a maneuver list rebuild the path from the
+    /// maneuver coordinates. New code should call `loadPath`.
+    func loadRoute(_ maneuvers: [Maneuver]) {
+        loadPath(maneuvers.map { GeoPoint(latitude: $0.latitude, longitude: $0.longitude) })
+    }
+
+    /// Decide the cue by following the path with pure pursuit. Used by live GPS and the simulator.
+    /// Projects the position onto the path, aims a look-ahead point ahead along it, and cues toward
+    /// that bearing every tick (continuous forward tap on a straightaway, a turn as the look-ahead
+    /// rounds a corner). Emits `arrived` near the end; steers back to the line if the wearer strays.
+    /// `applyCalibration` maps a real phone-compass heading to body-forward. The simulator already
+    /// supplies a body-forward heading, so it passes `false` and the calibration offset is skipped;
+    /// live GPS and the bench pass `true`.
+    func updateRoute(location: GeoPoint, phoneHeading: Double, applyCalibration: Bool = true) {
+        bodyHeading = applyCalibration
+            ? Bearing.bodyHeading(phoneTrueHeading: phoneHeading, calibrationOffset: calibrationOffset)
+            : Bearing.normalize(phoneHeading)
+        guard path.count >= 2, let projection = Bearing.closestPoint(on: path, to: location) else {
             currentCue = nil
             distanceToNext = -1
+            remaining = -1
             return
         }
-        let maneuver = maneuvers[activeIndex]
-        let distance = Bearing.distance(from: location.coordinate, to: maneuver.coordinate)
-        distanceToNext = distance
 
-        guard distance <= CitrusSquadConfig.turnCommitMeters else {
-            currentCue = nil
+        let metersToEnd = RouteMath.remainingDistance(from: projection.point,
+                                                      along: path,
+                                                      segmentIndex: projection.segmentIndex)
+        remaining = metersToEnd
+        if metersToEnd <= CitrusSquadConfig.pathArriveMeters {
+            currentCue = Cue(event: .arrived, mask: .all)
+            distanceToNext = metersToEnd
+            activeIndex = maneuvers.count
             return
         }
-        if maneuver.isFinal {
-            currentCue = Cue(event: .arrived, mask: .all)
-        } else {
-            let relative = Bearing.relative(routeBearing: maneuver.turnToBearing, bodyHeading: bodyHeading)
-            currentCue = QuadrantMapper.cue(forRelativeBearing: relative)
-            if distance <= CitrusSquadConfig.maneuverArriveMeters {
-                activeIndex += 1
-            }
+
+        // Aim at the look-ahead point on the path, unless the wearer has strayed too far, in which
+        // case aim straight back at the line first.
+        let aimPoint = projection.distanceMeters > CitrusSquadConfig.onPathToleranceMeters
+            ? projection.point
+            : Bearing.point(on: path, aheadOf: projection, by: CitrusSquadConfig.lookAheadMeters)
+
+        targetRouteBearing = Bearing.initial(from: location.coordinate, to: aimPoint.coordinate)
+        let relative = Bearing.relative(routeBearing: targetRouteBearing, bodyHeading: bodyHeading)
+        currentCue = QuadrantMapper.cue(forRelativeBearing: relative)
+
+        distanceToNext = distanceToNextPivot(from: projection, remainingToEnd: remaining)
+        activeIndex = pivots.filter { $0 <= projection.segmentIndex }.count
+    }
+
+    /// Distance along the path from the projection to the next corner ahead, or to the end if no
+    /// corner remains. Feeds the banner's "Turn in N m" countdown.
+    private func distanceToNextPivot(from projection: Bearing.PathProjection, remainingToEnd: Double) -> Double {
+        guard let nextPivot = pivots.first(where: { $0 >= projection.segmentIndex + 1 }) else {
+            return remainingToEnd
         }
+        var total = Bearing.distance(from: projection.point.coordinate,
+                                     to: path[projection.segmentIndex + 1].coordinate)
+        var index = projection.segmentIndex + 1
+        while index < nextPivot {
+            total += Bearing.distance(from: path[index].coordinate, to: path[index + 1].coordinate)
+            index += 1
+        }
+        return total
+    }
+
+    /// Build a maneuver per corner plus a final one at the destination, so the banner and voice can
+    /// report turns remaining. The turn bearing is the direction of the segment leaving the corner.
+    private static func maneuvers(forPivots pivots: [Int], in path: [GeoPoint]) -> [Maneuver] {
+        guard path.count >= 2 else { return [] }
+        var result: [Maneuver] = pivots.compactMap { index in
+            guard index + 1 < path.count else { return nil }
+            return Maneuver(latitude: path[index].latitude,
+                            longitude: path[index].longitude,
+                            turnToBearing: Bearing.initial(from: path[index].coordinate,
+                                                           to: path[index + 1].coordinate),
+                            isFinal: false)
+        }
+        if let last = path.last {
+            result.append(Maneuver(latitude: last.latitude, longitude: last.longitude,
+                                   turnToBearing: 0, isFinal: true))
+        }
+        return result
     }
 }

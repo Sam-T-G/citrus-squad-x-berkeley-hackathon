@@ -54,7 +54,7 @@ final class AppModel {
         }
     }
 
-    enum DriveMode: String, CaseIterable, Sendable { case bench, simulate }
+    enum DriveMode: String, CaseIterable, Sendable { case bench, simulate, live }
 
     private(set) var link = LinkReport(connectionState: "down", packetsSent: 0, lastEvent: "—")
     private(set) var transmitting = false
@@ -68,6 +68,9 @@ final class AppModel {
     private let directions = DirectionsService()
     private(set) var directionsUsage = DirectionsUsage()
     private(set) var isFetchingRoute = false
+
+    /// Debounces the LiDAR avoidance layer across the 10 Hz decide loop. See `ObstacleAvoidance`.
+    private var avoidanceFilter = AvoidanceFilter()
 
     private var cueSinks: [CueSink] { [audio] }
 
@@ -175,13 +178,49 @@ final class AppModel {
         simulator.start()
     }
 
-    func stopSimulation() {
+    /// Field-test mode: drive the turn cues off the real GPS fix and compass instead of the virtual
+    /// walker. The pure-pursuit engine follows the loaded route from wherever the wearer actually is.
+    /// Calibrate facing forward first so the body-relative bearing is right.
+    func startLiveWalk() {
+        if location.authorization == .notDetermined { location.requestPermission() }
+        location.start()
+        simulator.stop()
+        mode = .live
+    }
+
+    /// Stop whichever drive is active (simulated or live) and return to the idle bench state.
+    func stopDriving() {
         simulator.stop()
         mode = .bench
     }
 
+    /// Kept for callers (and voice) that say "stop simulation"; same as stopping any drive.
+    func stopSimulation() { stopDriving() }
+
+    /// True while either the simulator or a live GPS walk is driving cues.
+    var isDriving: Bool { simulator.isRunning || mode == .live }
+
+    /// The wearer's position for the map and overlay: the simulated walker in `.simulate`, the live
+    /// GPS fix in `.live` (and as a fallback on the bench).
+    var navPosition: GeoPoint? {
+        switch mode {
+        case .simulate: return simulator.position
+        case .live: return liveGeoPoint
+        case .bench: return liveGeoPoint ?? simulator.position
+        }
+    }
+
+    /// Travel heading for the map camera: the simulated course, or the live compass.
+    var navHeading: Double {
+        mode == .simulate ? simulator.heading : location.trueHeading
+    }
+
+    private var liveGeoPoint: GeoPoint? {
+        location.location.map { GeoPoint(latitude: $0.coordinate.latitude, longitude: $0.coordinate.longitude) }
+    }
+
     private func loadRoute(_ waypoints: [GeoPoint]) {
-        route.loadRoute(RouteMath.maneuvers(from: waypoints))
+        route.loadPath(waypoints)
         simulator.load(waypoints)
     }
 
@@ -204,15 +243,20 @@ final class AppModel {
     }
 
     private func tick() {
+        // Priority stack, highest first: a person in the path (camera) preempts everything; then the
+        // LiDAR obstacle-avoidance layer steers around what is ahead; navigation rides underneath.
         let turn = currentTurnCue()
-        let hazard = currentHazard()
+        let person = vision.currentHazard
+        let avoidance = obstacleCuesEnabled ? avoidanceCue() : nil
 
         let decided: ResolvedCue
-        if let hazard {
-            decided = ResolvedCue(event: hazard.event,
-                                  mask: hazard.mask,
-                                  intensity: ResolvedCue.intensity(forDistance: hazard.distanceMeters),
+        if let person {
+            decided = ResolvedCue(event: person.event,
+                                  mask: person.mask,
+                                  intensity: ResolvedCue.intensity(forDistance: person.distanceMeters),
                                   source: .hazard)
+        } else if let avoidance {
+            decided = avoidance
         } else if let turn {
             decided = ResolvedCue(event: turn.event,
                                   mask: turn.mask,
@@ -227,6 +271,27 @@ final class AppModel {
         for sink in cueSinks { sink.emit(decided) }
     }
 
+    /// The LiDAR obstacle-avoidance cue, or nil when the path is clear. Reads the three depth bands,
+    /// routes toward the open side (or stops and reorients when boxed in), and debounces the result
+    /// so the belt does not chatter. Sits above navigation and below the camera person tier.
+    private func avoidanceCue() -> ResolvedCue? {
+        let raw = ObstacleAvoidance.decide(left: depth.bands.left,
+                                           center: depth.bands.center,
+                                           right: depth.bands.right,
+                                           threshold: depth.thresholdMeters,
+                                           near: CitrusSquadConfig.dangerNearMeters)
+        switch avoidanceFilter.update(raw) {
+        case .clear:
+            return nil
+        case .steer(let side, let distance):
+            return ResolvedCue(event: .obstacleNear, mask: side,
+                               intensity: ResolvedCue.intensity(forDistance: distance), source: .hazard)
+        case .stop:
+            // Boxed in or too close: full-strength halt-and-reorient on the rotate motors.
+            return ResolvedCue(event: .turnAround, mask: .rotate, intensity: 255, source: .hazard)
+        }
+    }
+
     /// The turn cue for the current drive mode, or nil.
     private func currentTurnCue() -> Cue? {
         switch mode {
@@ -236,7 +301,13 @@ final class AppModel {
             return route.currentCue
         case .simulate:
             guard let (point, heading) = simulator.step(dt: 0.1) else { return nil }
-            route.updateRoute(location: point, phoneHeading: heading)
+            // The simulator's heading is already body-forward, so do not apply compass calibration.
+            route.updateRoute(location: point, phoneHeading: heading, applyCalibration: false)
+            return route.currentCue
+        case .live:
+            // Field walk: follow the route from the real GPS fix and compass.
+            guard let fix = liveGeoPoint, location.trueHeading >= 0 else { return nil }
+            route.updateRoute(location: fix, phoneHeading: location.trueHeading)
             return route.currentCue
         }
     }

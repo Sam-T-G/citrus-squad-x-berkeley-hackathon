@@ -43,9 +43,9 @@ struct MapSection: View {
     private var mapOrPrompt: some View {
         if hasKey {
             GoogleMapView(waypoints: model.simulator.waypoints,
-                          position: position,
-                          heading: model.simulator.heading,
-                          isFollowing: model.simulator.isRunning,
+                          position: model.navPosition,
+                          heading: model.navHeading,
+                          isFollowing: model.isDriving,
                           onTapCoordinate: setDestination)
         } else {
             VStack(spacing: 6) {
@@ -65,27 +65,25 @@ struct MapSection: View {
             HStack(spacing: 10) {
                 Button("Load demo route") { model.loadDemoRoute() }
                     .buttonStyle(.bordered)
-                if model.simulator.isRunning {
-                    Button("Stop") { model.stopSimulation() }.buttonStyle(.bordered)
+                if model.isDriving {
+                    Button("Stop") { model.stopDriving() }.buttonStyle(.bordered)
                 } else {
-                    Button("Run route") { model.startSimulation() }.buttonStyle(.borderedProminent)
+                    Button("Run sim") { model.startSimulation() }.buttonStyle(.borderedProminent)
                 }
                 Button("Fetch") { model.fetchRoute() }
                     .buttonStyle(.bordered)
                     .disabled(model.directionsAPIKey.isEmpty || model.isFetchingRoute)
+            }
+            if !model.isDriving {
+                Button("Walk (live GPS)") { model.startLiveWalk() }
+                    .buttonStyle(.bordered)
+                    .disabled(model.route.path.count < 2 || model.location.location == nil)
             }
             Text(model.routeStatus)
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .frame(maxWidth: .infinity, alignment: .leading)
         }
-    }
-
-    /// The position to center on: the simulated walk drives the demo, the live GPS fix otherwise.
-    private var position: GeoPoint? {
-        if let simulated = model.simulator.position { return simulated }
-        guard let live = model.location.location else { return nil }
-        return GeoPoint(latitude: live.coordinate.latitude, longitude: live.coordinate.longitude)
     }
 
     /// A tap sets the destination from the raw coordinate, no geocoding. The model seeds the origin

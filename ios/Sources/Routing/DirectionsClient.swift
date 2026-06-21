@@ -47,8 +47,7 @@ struct DirectionsClient {
         guard http.statusCode == 200 else { throw DirectionsError.http(http.statusCode) }
 
         let decoded = try JSONDecoder().decode(DirectionsResponse.self, from: data)
-        guard decoded.status == "OK",
-              let leg = decoded.routes.first?.legs.first,
+        guard decoded.status == "OK", let route = decoded.routes.first, let leg = route.legs.first,
               let firstStep = leg.steps.first else {
             // Google ships a human-readable reason in error_message on a denial. Surface it so a key
             // or enablement problem reads as itself instead of a bare status code.
@@ -56,11 +55,36 @@ struct DirectionsClient {
             throw DirectionsError.noRoute(decoded.status + detail)
         }
 
-        var waypoints: [GeoPoint] = [firstStep.startLocation.geoPoint]
+        return Self.densePath(from: route, leg: leg, firstStep: firstStep)
+    }
+
+    /// Build the full-detail path the belt follows. Each step carries an encoded polyline with every
+    /// bend in the sidewalk, so concatenating the steps (deduping the shared vertex at each join)
+    /// gives the real route geometry. Falls back to the route's overview polyline, then to the coarse
+    /// step start/end points, so a missing field degrades instead of failing.
+    private static func densePath(from route: DirectionsResponse.Route,
+                                  leg: DirectionsResponse.Leg,
+                                  firstStep: DirectionsResponse.Step) -> [GeoPoint] {
+        var path: [GeoPoint] = []
         for step in leg.steps {
-            waypoints.append(step.endLocation.geoPoint)
+            let stepPoints = Polyline.decode(step.polyline?.points ?? "")
+            guard !stepPoints.isEmpty else { continue }
+            // Drop the first point when it repeats the previous step's last point.
+            if let last = path.last, let first = stepPoints.first, last == first {
+                path.append(contentsOf: stepPoints.dropFirst())
+            } else {
+                path.append(contentsOf: stepPoints)
+            }
         }
-        return waypoints
+        if path.count >= 2 { return path }
+
+        let overview = Polyline.decode(route.overviewPolyline?.points ?? "")
+        if overview.count >= 2 { return overview }
+
+        // Last resort: the coarse step endpoints, as before.
+        var coarse: [GeoPoint] = [firstStep.startLocation.geoPoint]
+        for step in leg.steps { coarse.append(step.endLocation.geoPoint) }
+        return coarse
     }
 }
 
@@ -76,17 +100,33 @@ private struct DirectionsResponse: Decodable {
         case errorMessage = "error_message"
     }
 
-    struct Route: Decodable { let legs: [Leg] }
+    struct Route: Decodable {
+        let legs: [Leg]
+        let overviewPolyline: EncodedPolyline?
+
+        enum CodingKeys: String, CodingKey {
+            case legs
+            case overviewPolyline = "overview_polyline"
+        }
+    }
+
     struct Leg: Decodable { let steps: [Step] }
 
     struct Step: Decodable {
         let startLocation: LatLng
         let endLocation: LatLng
+        let polyline: EncodedPolyline?
 
         enum CodingKeys: String, CodingKey {
             case startLocation = "start_location"
             case endLocation = "end_location"
+            case polyline
         }
+    }
+
+    /// An encoded-polyline container: `{ "points": "<encoded>" }`.
+    struct EncodedPolyline: Decodable {
+        let points: String
     }
 
     struct LatLng: Decodable {
