@@ -367,6 +367,50 @@ Demo:
 
 **Post-hackathon:** replace Claude Vision with an on-device CoreML model trained on Mapillary Vistas or Open Images V7 (600+ classes including street infrastructure). Same architecture, no network dependency, works everywhere.
 
+## Claude Vision pipeline options (latency analysis)
+
+Four approaches, ranked by complexity:
+
+**1. Direct phone → Claude API**
+iPhone calls the Anthropic API directly. Crop the camera frame to the hazard region, resize small, send to Haiku 4.5.
+- Latency: ~300-500ms on good Wi-Fi
+- Complexity: lowest — one URLSession call
+- Risk: demo venue Wi-Fi dependency. If it drops, no labels (belt still works)
+- API key lives in `Local.xcconfig` same as the GitHub token
+
+**2. Direct + location cache (best latency after first detection)**
+Same as above but cache the label by horizontal band + approximate distance. If LiDAR fires at center-band ~2m again, speak the cached label instantly instead of calling Claude again. Most objects at the demo site won't move.
+
+```
+First time:  LiDAR fires → call Claude → "trash can" → cache it
+Next time:   LiDAR fires → cache hit → speak instantly (~0ms)
+```
+
+After a few seconds of walking the same space, almost everything is cached. This is the highest-impact optimization.
+
+**3. Phone → local Mac proxy → Claude API**
+Phone sends the cropped image to a small server on the Mac over local Wi-Fi. Mac calls Claude, returns the label. `cv/ingest.py` already exists and could handle this.
+- Adds ~1ms for the local hop, saves nothing vs option 1
+- Only worth it if the Mac is in the loop for monitoring or logging anyway
+
+**4. Pre-identify the demo environment (zero latency)**
+Walk the demo route beforehand with the app running. Identify and cache every stationary object on the path. By demo time, nothing calls Claude during the actual demo — all cache hits.
+- Zero latency during demo
+- Only works if the environment is fixed and you can scout it first
+- Very viable for a controlled demo loop
+
+**Decision for the hackathon: options 1 + 2 together, with option 4 as the demo safety net.**
+
+Direct API call for new detections, cache hits for anything seen before. Scout the route beforehand to pre-populate. If the cache covers everything on the demo path, Claude is never called live.
+
+**Why audio reliability matters more for a blind user:**
+
+For a sighted person demoing the tech, a 400ms delay or a dropped Wi-Fi label is fine. For someone actually navigating, it isn't. The belt tap from LiDAR is the safety signal — it fires instantly, on-device, no network. The audio label is context ("trash can on your left"). If the label is slow or missing, the user still knows something is there and which side. But the label is how they decide whether to dodge or just walk past.
+
+The scout + cache strategy (option 4) is the honest demo story: the system narrates the environment in real time with zero visible network dependency because it already knows what's there.
+
+**Post-hackathon target:** replace Claude Vision with an on-device CoreML model (Mapillary Vistas or Open Images V7, 600+ classes including street infrastructure). No network, no latency, works everywhere.
+
 ## Open items
 
 - [x] Implement `ObjectDetectionService.swift` (CoreML + ARKit frame subscription via `DepthService.onFrame`)
