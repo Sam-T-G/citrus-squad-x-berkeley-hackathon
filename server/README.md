@@ -7,7 +7,7 @@ Phone --UDP (4 LC2 bytes)--> this server --USB serial (1 command word)--> Arduin
             (WebSocket /belt also accepted, for the test client and browser debug)
 ```
 
-The Arduino firmware it drives is [`arduino/belt.ino`](arduino/belt.ino) (Adafruit PCA9685 + a continuous-pulse state machine), which reads one newline-terminated word per cue: `forward`, `stop`, `left`, `right`, `rotate_left`, `rotate_right`, `u_turn`, `idle`, plus a finite `low_battery` alert. Each pulse word latches a pattern that runs until the next command, so **`idle` is what stops the belt**. The server writes only when the command **changes** (so the 10 Hz heartbeat does not re-latch the same pattern) and sends `idle` automatically if the phone link goes silent, so a dropped link cannot leave the belt buzzing.
+The Arduino firmware it drives is [`arduino/belt/belt.ino`](arduino/belt/belt.ino) (Adafruit PCA9685 + a continuous-pulse state machine), which reads one newline-terminated word per cue: `forward`, `stop`, `left`, `right`, `rotate_left`, `rotate_right`, `u_turn`, `idle`, plus a finite `low_battery` alert. Each pulse word latches a pattern that runs until the next command, so **`idle` is what stops the belt**. The server writes only when the command **changes** (so the 10 Hz heartbeat does not re-latch the same pattern) and sends `idle` automatically if the phone link goes silent, so a dropped link cannot leave the belt buzzing.
 
 It runs with no hardware attached (mock mode), so the server can be built and tested before the Arduino is wired.
 
@@ -39,7 +39,7 @@ If no Arduino is found it prints `MOCK mode` and logs every command instead of w
 
 ## Flashing the Arduino
 
-Open [`arduino/belt.ino`](arduino/belt.ino) in the Arduino IDE, install the **Adafruit PWM Servo Driver** library (Library Manager), pick the board, and upload. It runs at 9600 baud, the same as `SERIAL_BAUD` below. Wire the PCA9685 servo pins per the sketch: front 0, right 1, back 2, left 3.
+Open [`arduino/belt/belt.ino`](arduino/belt/belt.ino) in the Arduino IDE, install the **Adafruit PWM Servo Driver** library (Library Manager), pick the board, and upload. It runs at 9600 baud, the same as `SERIAL_BAUD` below. Wire the PCA9685 servo pins per the sketch: front 0, right 1, back 2, left 3.
 
 ## Finding the serial port
 
@@ -110,7 +110,7 @@ On the phone, this is the **Cloud** belt transport (Control Panel); **Local (UDP
 | Var | Default | Meaning |
 |---|---|---|
 | `SERIAL_PORT` | auto-detect, then mock | serial device, or `mock` to force mock mode |
-| `SERIAL_BAUD` | `9600` | matches `Serial.begin(9600)` in `arduino/belt.ino` |
+| `SERIAL_BAUD` | `9600` | matches `Serial.begin(9600)` in `arduino/belt/belt.ino` |
 | `PORT` | `8080` | HTTP / WebSocket port |
 | `UDP_PORT` | `9999` | UDP port the phone sends LC2 to (matches iOS `espPort`) |
 | `WARMUP_S` | `2.0` | pause after opening serial, for the Arduino auto-reset |

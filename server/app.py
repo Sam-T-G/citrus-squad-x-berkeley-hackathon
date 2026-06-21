@@ -6,7 +6,7 @@ arbitration and the 100 ms heartbeat; this process is a thin, low-latency
 forwarder plus a health dashboard.
 
 This is the no-ESP32 / no-Wi-Fi path: the laptop hosts the link and tethers to
-the Arduino over USB. The firmware it drives is `server/arduino/belt.ino`, which
+the Arduino over USB. The firmware it drives is `server/arduino/belt/belt.ino`, which
 reads ONE newline-terminated word per cue:
   forward | stop | left | right | rotate_left | rotate_right | u_turn | idle
 Each word latches a continuous pulse pattern that runs until the next command, so
