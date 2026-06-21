@@ -11,16 +11,19 @@ import sys
 
 import websockets
 
-# Each step is (event, mask, label), held for a number of 100 ms ticks.
+# Each step is (event, mask, label), held for a number of 100 ms ticks. Masks use the
+# cardinal layout (front 0x01, left 0x02, right 0x04) so the run exercises l / r / f / s
+# on belt.ino. The server collapses each held cue to a single command byte (change-only).
 SCRIPT = [
     (0x00, 0x00, "idle", 10),
-    (0x20, 0x04, "turn-slight Right", 6),
+    (0x21, 0x02, "turn-now Left", 6),
     (0x00, 0x00, "idle", 6),
-    (0x21, 0x08, "turn-now Far Right", 6),
+    (0x21, 0x04, "turn-now Right", 6),
+    (0x00, 0x00, "idle", 6),
+    (0x20, 0x01, "straight", 6),
     (0x00, 0x00, "idle", 6),
     (0x10, 0x06, "hazard center", 10),
     (0x00, 0x00, "idle", 10),
-    (0x23, 0x0F, "arrived sweep", 6),
 ]
 
 
