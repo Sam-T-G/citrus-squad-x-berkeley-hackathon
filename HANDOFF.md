@@ -411,6 +411,111 @@ The scout + cache strategy (option 4) is the honest demo story: the system narra
 
 **Post-hackathon target:** replace Claude Vision with an on-device CoreML model (Mapillary Vistas or Open Images V7, 600+ classes including street infrastructure). No network, no latency, works everywhere.
 
+## CV model landscape — what else exists and why we're not switching today
+
+Research as of 2026-06-20. Framed against the actual constraint: on-device CoreML, thermal budget is the #1 demo risk, ~5 Hz, and LiDAR already owns "where something is." CV's real job is "what is it."
+
+### The actual gap
+
+The problem is vocabulary, not accuracy. YOLOv8n finds COCO movers (person, car, bike, dog) well enough, and LiDAR fires the belt regardless of class. COCO's 80 classes don't include poles, bollards, trash cans, parking meters, street lights, construction barriers, or curbs, which are what blind pedestrians actually walk into. The model comparison below weights on street-infrastructure class coverage and thermal fit, not raw mAP.
+
+### Model families
+
+**Newer closed-set YOLO (v11n / v12n).** Drop-in upgrades. YOLOv12-S hits 48.0% mAP at 2.6 ms/image, ~1% better than v11 at equal latency. Nano variants stay CoreML-friendly. Ships the same 80 COCO classes. Upgrading gets you a small speed and accuracy bump and zero new street-infrastructure labels. Lowest effort, lowest payoff for the gap.
+
+**Open-vocabulary detectors (YOLO-World / YOLOE, Grounding DINO).** These take a text vocabulary at export time, so you can ask for "bollard, trash can, parking meter" without retraining. YOLO-World's "prompt-then-detect" bakes the embeddings into the weights before export, so the text encoder is gone at inference and speed stays real-time (~35 AP on LVIS at 52 FPS on V100; small variant ~10 ms on edge). Most direct fix for the vocabulary gap in theory. Friction: CoreML export of YOLO-World is fiddly (RepVL-PAN doesn't always convert clean), the smallest variant is "small" (~12M params vs v8n's 3M), and you can't change the vocabulary at runtime. Grounding DINO is stronger open-vocab but too heavy for the phone at all.
+
+**Street-scene segmentation (Mapillary Vistas / Cityscapes).** The family actually built for the domain. Mapillary Vistas has 124 classes: pole, utility pole, street light, curb, curb cut, crosswalk, traffic sign front/back, traffic light variants. Cityscapes covers ~19 classes (road, sidewalk, pole, sign, person). Real-time edge models exist: SegFormer-B0 (3.8M params, 76.2% mIoU on Cityscapes, 47 FPS at 512px) and PIDNet-S (78.6% mIoU at 93 FPS on Cityscapes), with a 2025 PIDNet-LW cutting params 47%. Output is per-pixel masks, not labeled boxes, so fusing with LiDAR bands and the `TrackedObject` pipeline is more integration work. No polished off-the-shelf CoreML package. This is the strong post-hackathon target, not a Saturday-night swap.
+
+**VLM identification (Claude Vision, current plan).** Open vocabulary by description, best label quality, zero training. Haiku 4.5 at ~300-500ms over Wi-Fi with scout+cache as the demo safety net. Only weakness is network dependency, already neutralized by the scouting strategy.
+
+### Recommendation
+
+Don't retrain or swap models during the hack window.
+
+- Keep YOLOv8n on-device for COCO movers fused with LiDAR. It's proven and compiling.
+- Cover the street-infrastructure gap with Claude Vision as planned.
+- If there's a spare hour, prototype YOLO-World with a fixed street vocabulary (see "YOLO-World pipeline" below), but hard-timebox the CoreML export and keep v8n as the fallback.
+- Post-hackathon: commit to Mapillary Vistas as the on-device replacement for Claude. It's the only pretrained source whose vocabulary matches the blind-navigation domain.
+
+### Summary table
+
+| Model / approach | Paradigm | Street-infra coverage | On-device CoreML | Latency (nano/edge) | New labels without retrain | Hackathon fit |
+|---|---|---|---|---|---|---|
+| YOLOv8n (current) | Closed-set det | COCO 80 — no poles/bollards/cans | Yes, proven | ~5 Hz wired | No | Baseline, keep |
+| YOLOv11n / v12n | Closed-set det | Same COCO 80 | Yes, CoreML-friendly | ~2.6 ms/img (S) | No | Easy bump, low payoff |
+| YOLO-World / YOLOE | Open-vocab det (frozen at export) | Any prompted class | Possible, export fiddly, runs hotter | ~10 ms edge (S) | Yes, at export time | Risky, worth a timebox |
+| RT-DETR / RF-DETR | Transformer det | COCO/custom | Heavier, export harder | Slower than v12 on edge | No unless trained | Skip |
+| Mapillary Vistas seg | Semantic/instance seg | Best: 124 classes incl pole, curb, crosswalk, street light | Convertible, you build it | Seg is heavier | No (pretrained on these classes) | Post-hack target |
+| Cityscapes seg (SegFormer-B0 / PIDNet) | Semantic seg | ~19 classes: road, sidewalk, pole, sign | Yes, real-time edge models exist | 47 FPS @ 512 (SegFormer-B0) | No | Post-hack option |
+| Open Images V7 detector | Closed-set det | 600 classes, good street coverage | Convertible, you build it | Depends on backbone | No | Post-hack option |
+| Grounding DINO | Open-vocab det | Excellent | No, too big | Server-only | Yes | Server fallback only |
+| Claude Vision (Haiku 4.5) | VLM identify | Unlimited by description | Network only | ~300-500ms + TTS | Yes | Best gap-filler now |
+| Apple Vision built-in | Detect/classify | Animals only (cats/dogs) | Yes, native | Fast | No | Not useful here |
+
+## YOLO-World implementation pipeline
+
+Documented here for the team if the timebox experiment gets greenlit.
+
+### The key thing to understand
+
+"Open vocabulary" applies at export time, not at inference time. Once you call `set_classes()` and export, the text encoder is gone. On the phone you're running a wider closed-vocab detector, not a live NLP system. That's what keeps it fast enough to consider.
+
+### Step 1 — Python export (one-time, replaces the current v8n export)
+
+```python
+from ultralytics import YOLOWorld
+
+model = YOLOWorld('yolov8s-worldv2.pt')  # smallest available — no nano variant exists
+
+# Bakes embeddings into weights; text encoder is gone after this
+model.set_classes([
+    "person", "bicycle", "car", "motorcycle", "bus", "truck",
+    "dog", "cat",
+    "pole", "bollard", "trash can", "garbage bin",
+    "parking meter", "street light", "fire hydrant",
+    "traffic cone", "construction barrier", "newspaper box",
+    "bench", "stop sign", "traffic light", "crosswalk",
+])
+
+model.export(format='coreml', nms=True)
+# outputs yolov8s-worldv2.mlpackage
+```
+
+### Step 2 — Xcode (identical to v8n)
+
+Drag `yolov8s-worldv2.mlpackage` into the Sources group, check "Add to target: CitrusSquad." No other Xcode changes.
+
+### Step 3 — Swift (one constant changes)
+
+```swift
+// ObjectDetectionService.swift — only navigationClasses changes
+private let navigationClasses: Set<String> = [
+    "person", "bicycle", "car", "motorcycle", "bus", "truck",
+    "dog", "cat",
+    "pole", "bollard", "trash can", "garbage bin",
+    "parking meter", "street light", "fire hydrant",
+    "traffic cone", "construction barrier", "bench",
+    "stop sign", "traffic light",
+]
+```
+
+`VNCoreMLRequest` → `VNRecognizedObjectObservation` path stays identical. `MotionTracker`, `CollisionPredictor`, band fusion — untouched.
+
+### Friction points
+
+**Model size.** No YOLO-World-nano. Smallest is "small" (~12M params vs v8n's 3M). Test whether it stays within thermal headroom at 5 Hz or needs to drop to 2-3 Hz. The thermal soak isn't run yet, so this is unknown.
+
+**CoreML export reliability.** RepVL-PAN is less battle-tested than vanilla v8 for CoreML. `nms=True` is still required. If it fails you get raw tensors and zero detections — same failure mode as forgetting `nms=True` on v8n. Do a test export on the Mac before committing to this path.
+
+**Class name sensitivity.** YOLO-World learned text embeddings, so `"trash can"` and `"trashcan"` may behave differently. Test synonyms against `cv/webcam_test.py` and pick whichever hits.
+
+**Frozen vocabulary.** Can't add a class mid-demo. To change the set, re-run `set_classes()` and re-export.
+
+### Time estimate
+
+Clean export: ~1 hour (export, drag into Xcode, update the constant, webcam test). Fiddly CoreML export: 2-3 hours. That's the timebox. If the export doesn't cooperate, fall back to v8n + Claude Vision.
+
 ## Open items
 
 - [x] Implement `ObjectDetectionService.swift` (CoreML + ARKit frame subscription via `DepthService.onFrame`)
