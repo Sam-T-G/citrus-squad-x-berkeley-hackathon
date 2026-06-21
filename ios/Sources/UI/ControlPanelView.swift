@@ -94,7 +94,7 @@ struct ControlPanelView: View {
     private func linkCard(host: Binding<String>, port: Binding<UInt16>) -> some View {
         Card(title: "Belt link (LC2 / UDP)", status: linkStatus) {
             HStack {
-                TextField("ESP32 host", text: host)
+                TextField("Belt host (laptop or ESP32)", text: host)
                     .textFieldStyle(.roundedBorder)
                     .autocorrectionDisabled()
                     .textInputAutocapitalization(.never)
