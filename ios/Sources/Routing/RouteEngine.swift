@@ -91,6 +91,10 @@ final class RouteEngine {
     /// raw so the operator sees the unfiltered heading-to-cue mapping.
     private var turnSmoother = NavigationCueSmoother()
 
+    /// Live tolerance knobs for the smoother, dialable from the Diagnostics tuning card without a
+    /// rebuild. Seeded from `CitrusSquadConfig`; `tuning.reset()` returns to the shipped defaults.
+    let tuning = NavTuning()
+
     func calibrate(phoneHeading: Double) {
         calibrationOffset = phoneHeading
         isCalibrated = true
@@ -165,7 +169,13 @@ final class RouteEngine {
         let relative = Bearing.relative(routeBearing: targetRouteBearing, bodyHeading: bodyHeading)
         // Smooth the route-following cue so heading jitter near a band boundary does not chatter the
         // belt. The hazard tiers in AppModel preempt navigation, so this never delays a collision cue.
-        currentCue = turnSmoother.update(relativeBearing: relative)
+        // The tolerance knobs come from the live tuning so a walk can dial them without a rebuild.
+        currentCue = turnSmoother.update(relativeBearing: relative,
+                                         dwellTicks: tuning.dwellTicks,
+                                         turnDwellTicks: tuning.turnDwellTicks,
+                                         escalationDegrees: tuning.escalationDegrees,
+                                         adjacentMargin: tuning.adjacentMarginDegrees,
+                                         turnAroundMargin: tuning.turnAroundMarginDegrees)
 
         distanceToNext = distanceToNextPivot(from: projection, remainingToEnd: remaining)
         activeIndex = pivots.filter { $0 <= projection.segmentIndex }.count

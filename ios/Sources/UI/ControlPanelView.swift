@@ -24,6 +24,7 @@ struct ControlPanelView: View {
                                mode: $model.mode,
                                audioEnabled: $audio.isEnabled)
                 navCard(bearing: $route.targetRouteBearing)
+                NavTuningCard(model: model)
                 headingCard
                 gpsCard
                 depthCard(obstacleEnabled: $model.obstacleCuesEnabled,

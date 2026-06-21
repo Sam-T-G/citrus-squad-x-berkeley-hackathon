@@ -77,7 +77,17 @@ xcrun devicectl device process launch --device 00008130-001929D91A06001C \
 
 Device id `00008130-001929D91A06001C` is Sam's iPhone. Launch needs it unlocked. The Mac has no iOS simulators, so tests run on the phone.
 
-## How to tune on the phone
+## Tune live on the phone, no rebuild
+
+There is now a live tuning card for this, so the numbers can be dialed on a walk and left where they feel right, with a known-good fallback for a demo.
+
+- **Diagnostics tab, "Nav tolerance (live)" card.** Steppers for the two dwells, sliders for the escalation angle and the two deadbands. Changes take effect on the next tick while a sim or walk is running. Judges never see this tab.
+- **Reset to defaults** drops every knob back to the shipped values (3 / 2 / 60° / 5° / 10°). Tap it before a demo run so you always start from a clean, consistent baseline.
+- The card writes `model.route.tuning` (a `NavTuning`, seeded from `CitrusSquadConfig`). The config values stay the defaults and the reset target. Once a walk settles on good numbers, copy them back into `CitrusSquadConfig.swift` so they survive an app reinstall, and note why in the STATUS log.
+
+For a quick numeric edit without the UI, the config constants are still the source of truth (see the knobs below). The UI just changes them live at runtime.
+
+## How to drive the cue while tuning
 
 Two ways to drive the cue without walking outside:
 

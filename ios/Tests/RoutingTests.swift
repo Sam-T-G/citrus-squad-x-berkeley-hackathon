@@ -142,6 +142,38 @@ struct NavigationCueSmootherTests {
         let cues = replay([0, 180, 180])
         #expect(cues[2] == turnAround)
     }
+
+    @Test func liveTuningFeedsTheSmoother() {
+        // The smoother takes the knobs as parameters, so the live tuning card drives them. With a
+        // turn dwell of 1, a real turn commits on the first tick past the deadband instead of the
+        // second, proving the override reaches the smoother.
+        var smoother = NavigationCueSmoother()
+        _ = smoother.update(relativeBearing: 0, turnDwellTicks: 1)
+        let cue = smoother.update(relativeBearing: 90, turnDwellTicks: 1)
+        #expect(cue == sharpRight)
+    }
+}
+
+/// The live tolerance knobs start at the shipped defaults and reset back to them.
+@MainActor
+struct NavTuningTests {
+    @Test func defaultsMatchConfig() {
+        let tuning = NavTuning()
+        #expect(tuning.dwellTicks == CitrusSquadConfig.navCueDwellTicks)
+        #expect(tuning.turnDwellTicks == CitrusSquadConfig.navCueTurnDwellTicks)
+        #expect(tuning.escalationDegrees == CitrusSquadConfig.navCueEscalationDegrees)
+        #expect(tuning.adjacentMarginDegrees == CitrusSquadConfig.hysteresisAdjacentDegrees)
+        #expect(tuning.turnAroundMarginDegrees == CitrusSquadConfig.hysteresisTurnAroundDegrees)
+    }
+
+    @Test func resetRestoresDefaults() {
+        let tuning = NavTuning()
+        tuning.dwellTicks = 6
+        tuning.escalationDegrees = 120
+        tuning.reset()
+        #expect(tuning.dwellTicks == CitrusSquadConfig.navCueDwellTicks)
+        #expect(tuning.escalationDegrees == CitrusSquadConfig.navCueEscalationDegrees)
+    }
 }
 
 /// The client-side trip math that drives the nav banner. Pure, so it is unit-tested; it never
