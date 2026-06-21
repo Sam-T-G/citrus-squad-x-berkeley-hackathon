@@ -21,6 +21,12 @@ struct GoogleMapView: UIViewRepresentable {
     /// When true, the camera recenters and rotates to the position each update (an active walk).
     /// When false, the wearer can pan and zoom freely.
     var isFollowing: Bool
+    /// Whether to show the SDK's own controls (recenter + compass buttons). Off for the minimap, which
+    /// is a glanceable radar with no chrome.
+    var showsChrome: Bool = true
+    /// Whether the user can pan, zoom, tilt, and rotate by touch. Off for the minimap so it stays
+    /// locked heading-up on the wearer.
+    var allowsGestures: Bool = true
     /// Called with the coordinate the operator taps, to set the destination with no geocoding.
     var onTapCoordinate: (GeoPoint) -> Void
 
@@ -35,8 +41,12 @@ struct GoogleMapView: UIViewRepresentable {
         options.camera = GMSCameraPosition(latitude: 37.8719, longitude: -122.2585, zoom: 16)
         let mapView = GMSMapView(options: options)
         mapView.isMyLocationEnabled = true              // free blue dot, reads CoreLocation locally
-        mapView.settings.myLocationButton = true        // built-in recenter control
-        mapView.settings.compassButton = true
+        mapView.settings.myLocationButton = showsChrome  // built-in recenter control
+        mapView.settings.compassButton = showsChrome
+        mapView.settings.scrollGestures = allowsGestures
+        mapView.settings.zoomGestures = allowsGestures
+        mapView.settings.tiltGestures = allowsGestures
+        mapView.settings.rotateGestures = allowsGestures
         mapView.delegate = context.coordinator
         return mapView
     }
